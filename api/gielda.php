@@ -56,12 +56,16 @@ function gielda_spolki_z_katalogu(array $lista, array $zajeteSymbole = []): arra
         if (!preg_match('/^[A-Z0-9]{2,6}$/', $symbol)) blad("Symbol spółki „{$symbol}”: 2–6 wielkich liter lub cyfr.");
         if (in_array($symbol, $symbole, true)) blad("Symbol spółki {$symbol} powtarza się.");
         $symbole[] = $symbol;
-        $wynik[] = ['symbol' => $symbol, 'nazwa' => $nazwa,
+        $czysta = ['symbol' => $symbol, 'nazwa' => $nazwa,
             'branza' => mb_strtolower(mb_substr(trim((string) ($s['branza'] ?? '')), 0, 40)),
             'status' => ($s['status'] ?? '') === 'poza_gielda' ? 'poza_gielda' : 'notowana',
             'gielda' => mb_strtolower(trim((string) ($s['gielda'] ?? ''))),
             'cena' => max(1, (float) ($s['cena'] ?? 100)),
             'pochodzenie' => mb_substr(trim((string) ($s['pochodzenie'] ?? '')), 0, 80)];
+        foreach (['firma_id', 'profil', 'skala', 'kapital_startowy', 'menedzer_id', 'menedzer', 'funkcja_menedzera'] as $klucz) {
+            if (array_key_exists($klucz, $s)) $czysta[$klucz] = $s[$klucz];
+        }
+        $wynik[] = $czysta;
     }
     return $wynik;
 }
@@ -108,8 +112,11 @@ function gielda_spolki_do_instrumentow(array $spolki, array $instrumenty, array 
         $wartosci = ['symbol' => $s['symbol'], 'nazwa' => $s['nazwa'], 'rodzaj' => 'spolka',
             'kategoria' => $s['branza'], 'gielda' => $gielda, 'cena' => $s['cena'], 'jednostka' => 'akcja',
             'pochodzenie' => $s['pochodzenie'], 'notowana' => $s['status'] === 'notowana'];
-        if ($idx === null) $instrumenty[] = $wartosci;
-        else $instrumenty[$idx] = array_merge($instrumenty[$idx], $wartosci);
+        if ($idx === null) {
+            if ($s['status'] === 'notowana') $instrumenty[] = $wartosci;
+        } else {
+            $instrumenty[$idx] = array_merge($instrumenty[$idx], $wartosci);
+        }
     }
     return $instrumenty;
 }
@@ -141,9 +148,9 @@ function gielda_katalog_z_instrumentow(array $def, array $k): array
             $jest = false;
             foreach ($spolki as &$s) {
                 if ($s['symbol'] === $i['symbol'] || gielda_klucz_nazwy($s['nazwa']) === gielda_klucz_nazwy($i['nazwa'])) {
-                    $s = ['symbol' => $i['symbol'], 'nazwa' => $i['nazwa'], 'branza' => $i['kategoria'],
+                    $s = array_merge($s, ['symbol' => $i['symbol'], 'nazwa' => $i['nazwa'], 'branza' => $i['kategoria'],
                         'status' => ($i['notowana'] ?? true) ? 'notowana' : 'poza_gielda', 'gielda' => $i['gielda'],
-                        'cena' => $i['cena'], 'pochodzenie' => $i['pochodzenie']];
+                        'cena' => $i['cena'], 'pochodzenie' => $i['pochodzenie']]);
                     $jest = true;
                     break;
                 }

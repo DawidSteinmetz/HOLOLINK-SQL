@@ -9,7 +9,7 @@
 
 declare(strict_types=1);
 
-const PROFILE_FIRM = ['transport', 'komorka', 'agencja'];
+const PROFILE_FIRM = ['transport', 'komorka', 'agencja', 'wydobycie', 'produkcja', 'finanse'];
 
 // Ukryte cechy osób (1–10). Klucz => nazwa wyświetlana. Gracz poznaje je tylko testem.
 const STATYSTYKI = [
@@ -25,7 +25,8 @@ const STATYSTYKI = [
 const STANY_OSOBY = ['zdrowy', 'ranny', 'na misji', 'spalony', 'zatrzymany'];
 const TEST_CO_ILE_DNI = 30;
 // Z której puli kandydatów rekrutuje dany profil.
-const PULA_PROFILU = ['transport' => 'ogolna', 'komorka' => 'ogolna', 'agencja' => 'agencja'];
+const PULA_PROFILU = ['transport' => 'ogolna', 'komorka' => 'ogolna', 'agencja' => 'agencja',
+    'wydobycie' => 'ogolna', 'produkcja' => 'ogolna', 'finanse' => 'ogolna'];
 const ROLE_FIRMY = ['wlasciciel', 'menedzer', 'pracownik'];
 const STANY_STATKU = ['sprawny', 'uszkodzony', 'w naprawie', 'w trasie', 'na misji'];
 const STATUSY_SZLAKU = ['szkic', 'zgloszony', 'w_realizacji', 'wstrzymany', 'zakonczony', 'odrzucony'];
@@ -36,7 +37,8 @@ function katalog(): array
 {
     $k = wczytaj('katalog', []);
     return ['towary' => $k['towary'] ?? [], 'planety' => $k['planety'] ?? [], 'oferty' => $k['oferty'] ?? [],
-        'lokacje' => $k['lokacje'] ?? [], 'spolki' => $k['spolki'] ?? [], 'ustawienia' => $k['ustawienia'] ?? ['tempo' => 1]];
+        'lokacje' => $k['lokacje'] ?? [], 'spolki' => $k['spolki'] ?? [], 'npc' => $k['npc'] ?? [],
+        'ustawienia' => $k['ustawienia'] ?? ['tempo' => 1]];
 }
 
 // Katalog wysyłany do datapada: bez położenia na mapie i bez listy, kto widzi planetę.
@@ -44,7 +46,7 @@ function katalog(): array
 function katalog_dla_gracza(): array
 {
     $k = katalog();
-    unset($k['spolki']);
+    unset($k['spolki'], $k['npc']);
     $k['planety'] = array_map(fn($p) => array_diff_key($p, ['mapa' => 1, 'widoczna_dla' => 1]), $k['planety']);
     return $k;
 }
@@ -138,6 +140,7 @@ function firma_dane_puste(string $profil): array
         'transport' => ['flota' => [], 'zaloga' => [], 'magazyn' => [], 'szlaki' => [], 'budynki' => [], 'pojazdy' => []],
         'komorka' => ['flota' => [], 'zaloga' => [], 'magazyn' => [], 'szlaki' => [], 'budynki' => [], 'pojazdy' => [], 'misje' => []],
         'agencja' => ['flota' => [], 'zaloga' => [], 'magazyn' => [], 'szlaki' => [], 'budynki' => [], 'pojazdy' => [], 'misje' => [], 'cele' => []],
+        'wydobycie', 'produkcja', 'finanse' => ['flota' => [], 'zaloga' => [], 'magazyn' => [], 'szlaki' => [], 'budynki' => [], 'pojazdy' => [], 'zaklady' => []],
     };
 }
 
@@ -146,6 +149,7 @@ function firma_edytowalne(string $profil): array
 {
     return match ($profil) {
         'transport', 'komorka', 'agencja' => ['flota', 'zaloga', 'magazyn', 'budynki', 'pojazdy'],
+        'wydobycie', 'produkcja', 'finanse' => ['flota', 'zaloga', 'magazyn', 'budynki', 'pojazdy', 'zaklady'],
     };
 }
 
@@ -181,6 +185,182 @@ function nadaj_id(array $lista): array
         }
     }
     return $lista;
+}
+
+function firma_profil_dla_spolki(array $s): string
+{
+    if (in_array($s['profil'] ?? '', PROFILE_FIRM, true)) return $s['profil'];
+    $symbol = mb_strtoupper((string) ($s['symbol'] ?? ''));
+    if (in_array($symbol, ['MGU', 'BES'], true)) return 'wydobycie';
+    if ($symbol === 'IBC' || str_contains(mb_strtolower($s['nazwa'] ?? ''), 'bank')) return 'finanse';
+    if (in_array($symbol, ['XTS', 'HCL'], true) || str_contains(mb_strtolower($s['nazwa'] ?? ''), 'transport')) return 'transport';
+    if (in_array($symbol, ['VELT'], true) || preg_match('/fuel|mining|górn|wydoby|tibanna|consortium/i', ($s['nazwa'] ?? '') . ' ' . ($s['branza'] ?? ''))) return 'wydobycie';
+    if (preg_match('/industrial|processing|stoczni|uzbrojen|droid|elektronik|żywno|manufactur|production/i', ($s['nazwa'] ?? '') . ' ' . ($s['branza'] ?? ''))) return 'produkcja';
+    return 'produkcja';
+}
+
+function firma_skala_z_wartosci(float $wartosc): string
+{
+    return $wartosc >= 250 ? 'duza' : ($wartosc >= 120 ? 'srednia' : 'mala');
+}
+
+function firma_kapital_skali(string $skala): int
+{
+    return match ($skala) { 'duza' => 8400000, 'srednia' => 3200000, default => 1150000 };
+}
+
+function firma_npc_domyslny(string $symbol): array
+{
+    $domyslni = [
+        'KDY' => ['Daro Venn', 'Dyrektor stoczni'], 'SFS' => ['Nera Voss', 'Dyrektorka operacyjna'],
+        'CEC' => ['Jalen Corda', 'Prezes zarządu'], 'INC' => ['Vera Noll', 'Dyrektorka produkcji'],
+        'NDC' => ['Davin Oru', 'Dyrektor projektów'], 'RSD' => ['Kora Venn', 'Dyrektorka floty'],
+        'BLT' => ['Taris Konn', 'Dyrektor uzbrojenia'], 'MSM' => ['Brel Tann', 'Dyrektor handlowy'],
+        'CZK' => ['Mira Daal', 'Dyrektorka operacyjna'], 'CYB' => ['Tillo Renn', 'Dyrektor konstrukcji'],
+        'IAU' => ['Olan Merek', 'Dyrektor droidów'], 'SRS' => ['Sella Varn', 'Dyrektorka zarządu'],
+        'LOR' => ['Gerrit Vale', 'Dyrektor regionalny'], 'MGU' => ['Daro Luv', 'Nadzorca wydobycia'],
+        'BES' => ['Tavin Gree', 'Dyrektor wydobycia'], 'XTS' => ['Nali Tress', 'Dyrektorka przewozów'],
+        'HCL' => ['Nek Vos', 'Koordynator logistyki'], 'IBC' => ['Muun Rell', 'Dyrektor rachunków'],
+        'GIZ' => ['Ressa Varo', 'Dyrektorka handlowa'], 'VELT' => ['Tarok Venn', 'Dyrektor wydobycia'],
+        'ORDE' => ['Jora Pell', 'Dyrektorka zakładów'], 'DELT' => ['Savin Korr', 'Dyrektor przetwórstwa'],
+    ];
+    return $domyslni[$symbol] ?? ['Neri ' . $symbol, 'Dyrektor zarządzający'];
+}
+
+// Pierwsze wejście MG do Katalogu tworzy brakujące firmy giełdowe, NPC-menadżerów
+// i rachunki. Sygnatura spółki sprawia, że operacja jest bezpieczna przy każdym kolejnym wejściu.
+function firma_uzgodnij_spolki(): array
+{
+    $k = wczytaj('katalog', []);
+    $wszystko = wczytaj('firmy', firmy_puste());
+    $bank = wczytaj('bank', bank_pusty());
+    $spolki = $k['spolki'] ?? [];
+    foreach ($wszystko['firmy'] as $f) {
+        if (!in_array($f['profil'] ?? '', ['transport', 'wydobycie', 'produkcja', 'finanse'], true)) continue;
+        $jest = false;
+        foreach ($spolki as $s) {
+            if (($s['firma_id'] ?? '') === $f['id'] || (($s['symbol'] ?? '') !== '' && ($s['symbol'] ?? '') === ($f['spolka_symbol'] ?? ''))
+                || gielda_klucz_nazwy($s['nazwa'] ?? '') === gielda_klucz_nazwy($f['nazwa'] ?? '')) { $jest = true; break; }
+        }
+        if ($jest) continue;
+        $saldo = (int) ($bank['konta']['f:' . $f['id']]['saldo'] ?? 0);
+        $symbol = match ($f['nazwa']) {
+            'Veltris Fuel Consortium' => 'VELT', 'Ordel Industrial Holdings' => 'ORDE', 'Deltara Processing Authority' => 'DELT',
+            default => '',
+        };
+        $spolki[] = ['symbol' => $symbol, 'nazwa' => $f['nazwa'], 'branza' => '', 'status' => 'poza_gielda',
+            'profil' => firma_profil_dla_spolki(['nazwa' => $f['nazwa']]),
+            'skala' => $saldo >= 5000000 ? 'duza' : ($saldo >= 2000000 ? 'srednia' : 'mala'),
+            'kapital_startowy' => $saldo > 0 ? $saldo : 250000, 'firma_id' => $f['id']];
+    }
+    $zajete = array_column(gielda_definicje()['instrumenty'], 'symbol');
+    $spolki = gielda_spolki_z_katalogu($spolki, $zajete);
+    $npc = $k['npc'] ?? [];
+    $npcBySymbol = array_column($npc, null, 'spolka_symbol');
+    $doZasilenia = [];
+
+    foreach ($spolki as &$s) {
+        $symbol = $s['symbol'];
+        $profil = firma_profil_dla_spolki($s);
+        $s['profil'] = $profil;
+        $s['skala'] = in_array($s['skala'] ?? '', ['mala', 'srednia', 'duza'], true)
+            ? $s['skala'] : firma_skala_z_wartosci((float) ($s['cena'] ?? 1));
+        $s['kapital_startowy'] = max(250000, (int) ($s['kapital_startowy'] ?? firma_kapital_skali($s['skala'])));
+        $menedzer = $npcBySymbol[$symbol] ?? null;
+        if (!$menedzer) {
+            [$imie, $funkcja] = firma_npc_domyslny($symbol);
+            $menedzer = ['id' => 'npc_' . $symbol, 'spolka_symbol' => $symbol, 'imie' => $imie, 'funkcja' => $funkcja,
+                'typ' => 'menedzer', 'npc' => true];
+            $npc[] = $menedzer;
+        }
+        $s['menedzer_id'] = $menedzer['id'];
+        $s['menedzer'] = $menedzer['imie'];
+        $s['funkcja_menedzera'] = $menedzer['funkcja'];
+    }
+    unset($s);
+
+    $idsFirm = zmien('firmy', function (&$d) use (&$spolki, &$doZasilenia) {
+        foreach ($spolki as &$s) {
+            $idFirmy = null;
+            $f = null;
+            foreach ($d['firmy'] as &$kandydat) {
+                if (($kandydat['id'] ?? '') === ($s['firma_id'] ?? '') || ($kandydat['spolka_symbol'] ?? '') === $s['symbol']
+                    || gielda_klucz_nazwy($kandydat['nazwa'] ?? '') === gielda_klucz_nazwy($s['nazwa'])) { $f = &$kandydat; break; }
+            }
+            unset($kandydat);
+            if ($f === null) {
+                $idFirmy = id();
+                $f = ['id' => $idFirmy, 'nazwa' => $s['nazwa'], 'profil' => $s['profil'], 'czlonkowie' => [],
+                    'dane' => firma_dane_puste($s['profil'])];
+                $d['firmy'][] = $f;
+                $idx = array_key_last($d['firmy']);
+                $f = &$d['firmy'][$idx];
+            }
+            $f['nazwa'] = $s['nazwa'];
+            $f['profil'] = $s['profil'];
+            $f['spolka_symbol'] = $s['symbol'];
+            $f['skala'] = $s['skala'];
+            $f['menedzer_id'] = $s['menedzer_id'];
+            $f['dane'] = array_merge(firma_dane_puste($s['profil']), $f['dane'] ?? []);
+            $f['czlonkowie'] = $f['czlonkowie'] ?? [];
+            $zaloga = &$f['dane']['zaloga'];
+            $npcId = $s['menedzer_id'];
+            $osoba = null;
+            foreach ($zaloga as &$z) {
+                if (($z['npc_id'] ?? '') === $npcId) { $osoba = &$z; break; }
+            }
+            unset($z);
+            if ($osoba === null) {
+                $osoba = ['id' => id(), 'npc_id' => $npcId, 'imie' => $s['menedzer'], 'funkcja' => $s['funkcja_menedzera'],
+                    'pensja' => 0, 'statek' => '', 'budynek' => '', 'stan' => 'zdrowy', 'statystyki' => ['zarzadzanie' => 7, 'logistyka' => 6, 'lojalnosc' => 6],
+                    'kryptonim' => '', 'gracz' => ''];
+                $zaloga[] = $osoba;
+            } else {
+                $osoba['imie'] = $s['menedzer'];
+                $osoba['funkcja'] = $s['funkcja_menedzera'];
+            }
+            unset($osoba, $zaloga, $f);
+            $s['firma_id'] = $idFirmy ?? ($s['firma_id'] ?? '');
+            if ($s['firma_id'] === '') {
+                foreach ($d['firmy'] as $utworzona) if (($utworzona['spolka_symbol'] ?? '') === $s['symbol']) { $s['firma_id'] = $utworzona['id']; break; }
+            }
+            $konto = 'f:' . $s['firma_id'];
+            if ($s['firma_id'] !== '' && !isset($doZasilenia[$konto])) $doZasilenia[$konto] = ['nazwa' => $s['nazwa'], 'kwota' => $s['kapital_startowy']];
+            $idFirmy = null;
+        }
+        unset($s);
+        return true;
+    }, firmy_puste());
+
+    // Powiązania firma_id są uzupełniane po zapisaniu listy firm.
+    $zapisaneFirmy = wczytaj('firmy', firmy_puste())['firmy'];
+    foreach ($spolki as &$s) {
+        if (empty($s['firma_id'])) {
+            foreach ($zapisaneFirmy as $f) if (($f['spolka_symbol'] ?? '') === $s['symbol']) { $s['firma_id'] = $f['id']; break; }
+        }
+    }
+    unset($s);
+    $k['spolki'] = $spolki;
+    $k['npc'] = $npc;
+    $staryKatalog = wczytaj('katalog', []);
+    if (($staryKatalog['spolki'] ?? []) !== $spolki || ($staryKatalog['npc'] ?? []) !== $npc) {
+        zmien('katalog', function (&$d) use ($spolki, $npc) { $d['spolki'] = $spolki; $d['npc'] = $npc; }, []);
+    }
+    foreach ($zapisaneFirmy as $f) {
+        $uid = 'f:' . $f['id'];
+        if (isset($bank['konta'][$uid]) || isset($doZasilenia[$uid])) continue;
+        $kwota = in_array($f['profil'] ?? '', ['komorka', 'agencja'], true)
+            ? 250000 : firma_kapital_skali($f['skala'] ?? 'mala');
+        $doZasilenia[$uid] = ['nazwa' => $f['nazwa'], 'kwota' => $kwota];
+    }
+    zmien('bank', function (&$b) use ($doZasilenia) {
+        foreach ($doZasilenia as $uid => $w) {
+            if (isset($b['konta'][$uid])) continue;
+            bank_konto($b, $uid);
+            bank_uznaj($b, $uid, (int) $w['kwota'], 'Kapitał założycielski', 'Rejestracja spółki ' . $w['nazwa'], [$uid => $w['nazwa']]);
+        }
+    }, bank_pusty());
+    return $zapisaneFirmy;
 }
 
 // ---------- transport: sprawdzanie i rozliczanie szlaku ----------
@@ -429,6 +609,14 @@ function transport_operacja(array &$firma, string $op, array $w, array $u, bool 
     blad('Nieznana operacja.', 404);
 }
 
+function firma_biznes_operacja(array &$firma, string $op, array $w, array $u, bool $moze_zmieniac): array
+{
+    if (!in_array($op, ['przydziel', 'budynek_pracownicy', 'budynek_kup', 'test', 'kandydat_test', 'kandydat_zatrudnij', 'przelew'], true)) {
+        blad('Ta firma nie prowadzi przewozów ani kursów handlowych.', 403);
+    }
+    return transport_operacja($firma, $op, $w, $u, $moze_zmieniac);
+}
+
 function obsluz_firmy(string $akcja, bool $post): void
 {
     switch ($akcja) {
@@ -483,6 +671,7 @@ function obsluz_firmy(string $akcja, bool $post): void
                         'transport' => transport_operacja($f, $op, $w, $u, $moze),
                         'komorka' => komorka_operacja($f, $op, $w, $u, $moze),
                         'agencja' => agencja_operacja($f, $op, $w, $u, $moze),
+                        'wydobycie', 'produkcja', 'finanse' => firma_biznes_operacja($f, $op, $w, $u, $moze),
                     };
                 }
                 blad('Nie ma takiej firmy.', 404);
@@ -508,7 +697,8 @@ function obsluz_firmy(string $akcja, bool $post): void
         case 'mg_katalog':
             wymagaj_mg();
             gielda_uzgodnij_katalog();
-            odpowiedz(['katalog' => katalog(), 'gieldy' => gielda_definicje()['gieldy']]);
+            $firmy = firma_uzgodnij_spolki();
+            odpowiedz(['katalog' => katalog(), 'gieldy' => gielda_definicje()['gieldy'], 'firmy' => $firmy]);
 
         case 'mg_katalog_zapisz':
             if (!$post) blad('Zła metoda.', 405);
@@ -517,6 +707,26 @@ function obsluz_firmy(string $akcja, bool $post): void
             $towary = nadaj_id((array) ($w['towary'] ?? []));
             $gielda = gielda_definicje();
             $spolki = gielda_spolki_z_katalogu((array) ($w['spolki'] ?? []), array_column($gielda['instrumenty'], 'symbol'));
+            $npc = [];
+            foreach ((array) ($w['npc'] ?? []) as $n) {
+                if (!is_array($n)) blad('Każdy NPC musi być obiektem.');
+                $imie = mb_substr(trim((string) ($n['imie'] ?? '')), 0, 80);
+                if ($imie === '') continue;
+                $npc[] = ['id' => mb_substr(trim((string) ($n['id'] ?? '')) ?: id(), 0, 32),
+                    'spolka_symbol' => mb_strtoupper(trim((string) ($n['spolka_symbol'] ?? ''))),
+                    'imie' => $imie, 'funkcja' => mb_substr(trim((string) ($n['funkcja'] ?? 'Menedżer')), 0, 80),
+                    'typ' => 'menedzer', 'npc' => true];
+            }
+            foreach ($spolki as &$s) {
+                foreach ($npc as $n) {
+                    if ($n['spolka_symbol'] !== $s['symbol']) continue;
+                    $s['menedzer_id'] = $n['id'];
+                    $s['menedzer'] = $n['imie'];
+                    $s['funkcja_menedzera'] = $n['funkcja'];
+                    break;
+                }
+            }
+            unset($s);
             $planety = nadaj_id((array) ($w['planety'] ?? []));
             foreach ($towary as &$t) {
                 if (trim((string) ($t['nazwa'] ?? '')) === '') blad('Każdy towar musi mieć nazwę.');
@@ -645,10 +855,11 @@ function obsluz_firmy(string $akcja, bool $post): void
             $instrumenty = gielda_spolki_do_instrumentow($spolki, $instrumenty, $gielda['gieldy']);
             $nowaGielda = gielda_z_wejscia(['gieldy' => $gielda['gieldy'], 'instrumenty' => $instrumenty, 'ustawienia' => $gielda['ustawienia']]);
             zmien('gielda', function (&$g) use ($nowaGielda) { $g = $nowaGielda; }, []);
-            zmien('katalog', function (&$k) use ($towary, $planety, $oferty, $lokacje, $spolki, $tempo) {
+            zmien('katalog', function (&$k) use ($towary, $planety, $oferty, $lokacje, $spolki, $npc, $tempo) {
                 $k = ['towary' => $towary, 'planety' => $planety, 'oferty' => $oferty, 'lokacje' => $lokacje,
-                    'spolki' => $spolki, 'ustawienia' => ['tempo' => $tempo]];
+                    'spolki' => $spolki, 'npc' => $npc, 'ustawienia' => ['tempo' => $tempo]];
             });
+            firma_uzgodnij_spolki();
             odpowiedz(['ok' => true]);
 
         case 'mg_kandydaci':
@@ -680,7 +891,8 @@ function obsluz_firmy(string $akcja, bool $post): void
         case 'mg_firmy':
             wymagaj_mg();
             handel_automaty();
-            odpowiedz(['firmy' => wczytaj('firmy', firmy_puste())['firmy'], 'katalog' => katalog()]);
+            $firmy = firma_uzgodnij_spolki();
+            odpowiedz(['firmy' => $firmy, 'katalog' => katalog()]);
 
         case 'mg_firma_zapisz':
             // Nazwa, profil, członkowie oraz (opcjonalnie) całe dane profilu z edytora JSON.
@@ -802,6 +1014,20 @@ function obsluz_firmy(string $akcja, bool $post): void
                     ];
                 }
                 unset($m);
+                if (isset($dane['zaklady'])) {
+                    $dane['zaklady'] = nadaj_id($dane['zaklady']);
+                    foreach ($dane['zaklady'] as &$z) {
+                        $z['nazwa'] = mb_substr(trim((string) ($z['nazwa'] ?? '')), 0, 80);
+                        if ($z['nazwa'] === '') blad('Każdy zakład musi mieć nazwę.');
+                        $z['typ'] = mb_substr(trim((string) ($z['typ'] ?? '')), 0, 40);
+                        $z['planeta'] = ($z['planeta'] ?? '') === '' ? '' : katalog_id($kat['planety'], (string) $z['planeta'], 'planeta');
+                        $z['towar'] = ($z['towar'] ?? '') === '' ? '' : katalog_id($kat['towary'], (string) $z['towar'], 'towar');
+                        $z['wydajnosc'] = max(0, (int) ($z['wydajnosc'] ?? 0));
+                        $z['stan'] = in_array($z['stan'] ?? '', ['czynny', 'wstrzymany', 'zamkniety'], true) ? $z['stan'] : 'czynny';
+                        $z['opis'] = mb_substr(trim((string) ($z['opis'] ?? '')), 0, 500);
+                    }
+                    unset($z);
+                }
             }
             $fid = (string) ($w['id'] ?? '');
             $wynik = zmien('firmy', function (&$wszystko) use ($fid, $profil, $nazwa, $czlonkowie, $dane) {

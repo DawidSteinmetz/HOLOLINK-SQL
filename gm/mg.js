@@ -81,7 +81,7 @@ function zalozMG() {
 function panel(u) {
   document.getElementById('kto').textContent = 'Zalogowano: ' + u.login;
   menu.hidden = false;
-  const zakladki = { stan: 'Stan postaci', karty: 'Karty postaci', konta: 'Konta', bank: 'Bank', gielda: 'Giełda', wydarzenia: 'Wydarzenia', firmy: 'Firmy', rekrutacja: 'Rekrutacja', katalog: 'Katalog', dokumenty: 'Dokumenty', kanaly: 'Kanały', holonet: 'Holonet', frakcje: 'Frakcje', harmonogram: 'Kalendarz' };
+  const zakladki = { stan: 'Stan postaci', karty: 'Karty postaci', konta: 'Konta', bank: 'Bank', gielda: 'Giełda', wydarzenia: 'Wydarzenia', rekrutacja: 'Rekrutacja', katalog: 'Katalog', dokumenty: 'Dokumenty', kanaly: 'Kanały', holonet: 'Holonet', frakcje: 'Frakcje', harmonogram: 'Kalendarz' };
   const rysujMenu = () => wyczysc(menu).append(
     ...Object.entries(zakladki).map(([k, n]) => h('button' + (k === biezaca ? '.on' : ''), { onclick: () => { biezaca = k; rysujMenu(); otworz(); } }, n)),
     h('button', { onclick: async () => { await api('wyloguj', {}); location.reload(); } }, 'Wyloguj'));
@@ -237,7 +237,7 @@ const WZOR_PLANET = [
 ];
 
 async function katalog() {
-  const { katalog: k, gieldy: listaGield } = await api('mg_katalog');
+  const { katalog: k, gieldy: listaGield, firmy: listaFirm } = await api('mg_katalog');
   const towary = h('textarea', { style: 'min-height:260px' }, JSON.stringify(k.towary, null, 2));
   // Specyfika planet: klucze t:<id>/k:<kategoria> zamieniamy na nazwy, żeby dało się je czytać.
   const nazwaTowaru = Object.fromEntries(k.towary.map((t) => [t.id, t.nazwa]));
@@ -252,6 +252,7 @@ async function katalog() {
   const tempo = h('input', { type: 'number', min: 0.05, max: 60, step: 0.05, value: k.ustawienia?.tempo ?? 1, style: 'max-width:140px' });
   const info = h('div');
   const spolki = (k.spolki || []).map((s) => ({ ...s }));
+  const npc = (k.npc || []).map((n) => ({ ...n }));
   const listaSpolek = h('div');
   const rysujSpolki = () => {
     wyczysc(listaSpolek).append(...spolki.map((s, i) => {
@@ -263,9 +264,19 @@ async function katalog() {
       const gielda = h('select', listaGield.map((g) => h('option', { value: g.id, selected: g.id === s.gielda }, g.nazwa)));
       const cena = h('input', { type: 'number', min: 1, step: 'any', value: s.cena || 100, title: 'Cena bazowa akcji', style: 'width:110px' });
       const pochodzenie = h('input', { value: s.pochodzenie || '', placeholder: 'Planeta pochodzenia', style: 'width:160px' });
-      const wiersz = h('div.rzad', { style: 'gap:8px; margin:8px 0; flex-wrap:wrap' }, symbol, nazwa, branza, status, gielda, cena, pochodzenie);
+      const profil = h('select', Object.entries(PROFILE_BIZNES).map(([key, label]) => h('option', { value: key, selected: key === (s.profil || 'produkcja') }, label)));
+      const skala = h('select', [h('option', { value: 'mala', selected: s.skala === 'mala' }, 'Mała'),
+        h('option', { value: 'srednia', selected: s.skala === 'srednia' }, 'Średnia'), h('option', { value: 'duza', selected: s.skala === 'duza' }, 'Duża')]);
+      const menedzer = npc.find((n) => n.spolka_symbol === s.symbol);
+      const imieMenedzera = h('input', { value: menedzer?.imie || s.menedzer || '', placeholder: 'NPC — menedżer' });
+      const funkcjaMenedzera = h('input', { value: menedzer?.funkcja || s.funkcja_menedzera || 'Dyrektor zarządzający', placeholder: 'Funkcja', style: 'width:180px' });
+      const wiersz = h('div.panel', { style: 'padding:10px; margin:8px 0' },
+        h('div.rzad', { style: 'gap:8px; flex-wrap:wrap' }, symbol, nazwa, branza, status, gielda, cena, pochodzenie),
+        h('div.rzad', { style: 'gap:8px; margin-top:8px; flex-wrap:wrap' }, profil, skala, imieMenedzera, funkcjaMenedzera));
       wiersz._dane = () => ({ symbol: symbol.value, nazwa: nazwa.value, branza: branza.value, status: status.value,
-        gielda: gielda.value, cena: Number(cena.value), pochodzenie: pochodzenie.value });
+        gielda: gielda.value, cena: Number(cena.value), pochodzenie: pochodzenie.value, profil: profil.value, skala: skala.value,
+        firma_id: s.firma_id || '', menedzer_id: menedzer?.id || s.menedzer_id || '', menedzer: imieMenedzera.value, funkcja_menedzera: funkcjaMenedzera.value });
+      wiersz._npc = () => ({ id: menedzer?.id || s.menedzer_id || '', spolka_symbol: symbol.value, imie: imieMenedzera.value, funkcja: funkcjaMenedzera.value });
       return wiersz;
     }));
   };
@@ -283,10 +294,13 @@ async function katalog() {
     info,
     h('label', 'Towary', towary), h('br'),
     h('h3', 'Spółki'),
-    h('p.slaby', 'Lista obejmuje spółki notowane i nienotowane. Dla notowanych giełda utworzy lub zaktualizuje akcje; firmy poza giełdą nie będą dostępne do handlu. Symbol można zostawić pusty — system nada go automatycznie.'),
+    h('p.slaby', 'Lista obejmuje spółki notowane i prywatne. Profil, skalę kapitału i NPC-menadżera ustawiasz tutaj. Dla notowanych giełda prowadzi akcje; firmy poza giełdą nie są dostępne do handlu. Symbol można zostawić pusty — system nada go automatycznie.'),
     listaSpolek,
     btn('Dodaj spółkę', () => { spolki.push({ symbol: '', nazwa: '', branza: '', status: 'poza_gielda', gielda: listaGield[0]?.id || '', cena: 100, pochodzenie: '' }); rysujSpolki(); }),
     h('br'),
+    h('div.karta', h('h3', `Firmy w systemie (${listaFirm?.length ?? 0})`),
+      h('p.slaby', 'Spółki giełdowe i prywatne mają własne profile działalności, personel NPC i rachunki bankowe.'),
+      btn('Otwórz rejestr firm', () => { wyczysc(glowna); firmy(true); }, '.glowny')),
     h('label', 'Planety', planety), h('br'),
     h('label', 'Lokacje — miejsca na planetach, do których postacie mogą się przemieszczać: nazwa, planeta, typ (hangar, platforma, port, hotel, bankomat, sklep, kantyna, biuro, garaz, inne; lądowiska: hangar, platforma, port), '
       + 'x i y (km na mapie planety), publiczna (true = każdy zna; false = tylko postacie z „znane miejsca” w karcie). Hangar: jakosc 1–5 (szybkość obsługi), paliwo (zapas w %; brak = bez ograniczeń), cena_paliwa (kr za 1%). '
@@ -296,7 +310,9 @@ async function katalog() {
     h('div.rzad',
       btn('Zapisz katalog', async () => {
         try {
-          await api('mg_katalog_zapisz', { towary: JSON.parse(towary.value), spolki: [...listaSpolek.children].map((x) => x._dane()), planety: JSON.parse(planety.value), oferty: JSON.parse(oferty.value), lokacje: JSON.parse(lokacje.value), tempo: Number(tempo.value) });
+          await api('mg_katalog_zapisz', { towary: JSON.parse(towary.value), spolki: [...listaSpolek.children].map((x) => x._dane()),
+            npc: [...listaSpolek.children].map((x) => x._npc()).filter((n) => n.imie.trim()),
+            planety: JSON.parse(planety.value), oferty: JSON.parse(oferty.value), lokacje: JSON.parse(lokacje.value), tempo: Number(tempo.value) });
           wyczysc(glowna); await katalog();
           glowna.prepend(msg('Zapisano katalog.', 'ok'));
         } catch (e) {
@@ -599,7 +615,8 @@ async function rekrutacja() {
 
 // ---------- firmy ----------
 
-const PROFILE_FIRM = { transport: 'Transport', komorka: 'Komórka', agencja: 'Agencja (przykrywka ISB)' };
+const PROFILE_FIRM = { transport: 'Transport', wydobycie: 'Wydobycie', produkcja: 'Produkcja i przemysł', finanse: 'Finanse i bankowość', komorka: 'Komórka', agencja: 'Agencja (przykrywka ISB)' };
+const PROFILE_BIZNES = { transport: 'Transport', wydobycie: 'Wydobycie', produkcja: 'Produkcja i przemysł', finanse: 'Finanse i bankowość' };
 const ROLE_FIRMY = { wlasciciel: 'właściciel', menedzer: 'menedżer', pracownik: 'pracownik' };
 const STATYSTYKI = { pilotaz: 'pilotaż', dowodzenie: 'dowodzenie', taktyka: 'taktyka', zarzadzanie: 'zarządzanie', logistyka: 'logistyka', lojalnosc: 'lojalność', konspiracja: 'konspiracja', handel: 'handel' };
 const STATUS_KURSU = { szkic: 'szkic', zgloszony: 'CZEKA NA DECYZJĘ', w_realizacji: 'w trasie', wstrzymany: 'wstrzymany', zakonczony: 'zakończony', odrzucony: 'odrzucony' };
@@ -619,6 +636,7 @@ function daneDoEdycji(d, kat) {
   };
   wynik.budynki = (d.budynki || []).map((b) => ({ ...b, planeta: pl[b.planeta] || '', menedzer: os[b.menedzer] || '' }));
   wynik.pojazdy = (d.pojazdy || []).map((p) => ({ ...p, lokacja: LOKACJE[p.lokacja] || '', kierowca: os[p.kierowca] || '' }));
+  wynik.zaklady = (d.zaklady || []).map((z) => ({ ...z, planeta: pl[z.planeta] || '', towar: tw[z.towar] || '' }));
   wynik.zaloga = wynik.zaloga.map((z) => ({ ...z, gracz: z.gracz ? (LOGINY[z.gracz] || z.gracz) : '' }));
   return wynik;
 }
@@ -658,14 +676,30 @@ const WZOR_TRANSPORTU = {
   magazyn: [{ planeta: 'Zephyria', towar: 'Zboże', ilosc: 40 }],
 };
 
-async function firmy() {
+const WZOR_WYDOBYCIA = {
+  zaloga: [{ imie: 'Tarok Venn', funkcja: 'dyrektor wydobycia', pensja: 0, statystyki: { zarzadzanie: 7, logistyka: 6 } }],
+  zaklady: [{ nazwa: 'Pole wydobywcze Kessel', typ: 'kopalnia', planeta: 'Kessel', towar: 'Coaxium surowe', wydajnosc: 120, stan: 'czynny', opis: 'Główne pole wydobywcze spółki.' }],
+};
+const WZOR_PRODUKCJI = {
+  zaloga: [{ imie: 'Jora Pell', funkcja: 'dyrektorka zakładów', pensja: 0, statystyki: { zarzadzanie: 7, logistyka: 6 } }],
+  zaklady: [{ nazwa: 'Zakłady główne', typ: 'fabryka', planeta: 'Corellia', towar: 'Moduły droidów', wydajnosc: 80, stan: 'czynny', opis: 'Kompleks produkcyjny.' }],
+};
+const WZOR_FINANSOW = {
+  zaloga: [{ imie: 'Muun Rell', funkcja: 'dyrektor rachunków', pensja: 0, statystyki: { zarzadzanie: 8, logistyka: 7 } }],
+  zaklady: [{ nazwa: 'Centrala', typ: 'siedziba', planeta: 'Coruscant', wydajnosc: 0, stan: 'czynny', opis: 'Centrala rozliczeniowa spółki.' }],
+};
+
+async function firmy(wrocDoKatalogu = false) {
   const { firmy: lista, katalog: kat } = await api('mg_firmy');
+  const { konta } = await api('mg_bank');
+  const rachunki = Object.fromEntries(konta.map((k) => [k.uid, k]));
   const { uzytkownicy } = await api('mg_uzytkownicy');
   for (const u of uzytkownicy) LOGINY[u.id] = u.login;
   for (const l of (await api('mg_karty')).lokacje) LOKACJE[l.klucz] = l.nazwa;
   const gracze = uzytkownicy.filter((u) => u.rola !== 'mg');
   const postac = Object.fromEntries(uzytkownicy.map((u) => [u.id, u.postac]));
-  const odswiez = async (t) => { wyczysc(glowna); await firmy(); if (t) glowna.prepend(msg(t, 'ok')); };
+  const odswiez = async (t) => { wyczysc(glowna); await firmy(wrocDoKatalogu); if (t) glowna.prepend(msg(t, 'ok')); };
+  if (wrocDoKatalogu) glowna.append(h('div.karta', btn('← Wróć do Katalogu', () => { wyczysc(glowna); katalog(); })));
 
   // Kursy czekające na decyzję — na górze, bo to codzienna robota MG.
   const czekajace = lista.flatMap((f) => (f.dane.szlaki || [])
@@ -743,7 +777,7 @@ async function firmy() {
     const nowa = !f;
     f = f || { id: '', nazwa: '', profil: 'transport', czlonkowie: [], dane: { flota: [], zaloga: [], magazyn: [], budynki: [], pojazdy: [] } };
     // Nowa firma: zmiana profilu podmienia pusty szablon danych (komórka ma też budynki).
-    const pustyDlaProfilu = () => JSON.stringify({ flota: [], zaloga: [], magazyn: [], budynki: [], pojazdy: [] }, null, 2);
+    const pustyDlaProfilu = () => JSON.stringify({ flota: [], zaloga: [], magazyn: [], budynki: [], pojazdy: [], zaklady: [] }, null, 2);
     const nazwa = h('input', { value: f.nazwa });
     const profil = h('select', { disabled: !nowa }, Object.entries(PROFILE_FIRM).map(([k, n]) => h('option', { value: k, selected: k === f.profil }, n)));
     const czlonkowie = h('div');
@@ -790,8 +824,9 @@ async function firmy() {
       h('br'),
       h('div.rzad',
         btn('Zapisz', zapisz, '.glowny'),
-        btn('Wstaw przykład', () => { dane.value = JSON.stringify({ komorka: WZOR_KOMORKI, agencja: WZOR_AGENCJI }[profil.value] || WZOR_TRANSPORTU, null, 2); }),
-        nowa ? null : btn('Usuń firmę', bezpiecznie(async () => {
+        btn('Wstaw przykład', () => { dane.value = JSON.stringify({ komorka: WZOR_KOMORKI, agencja: WZOR_AGENCJI,
+          wydobycie: WZOR_WYDOBYCIA, produkcja: WZOR_PRODUKCJI, finanse: WZOR_FINANSOW }[profil.value] || WZOR_TRANSPORTU, null, 2); }),
+        nowa || f.spolka_symbol ? null : btn('Usuń firmę', bezpiecznie(async () => {
           if (!confirm(`Usunąć firmę ${f.nazwa} razem z flotą i magazynami?`)) return;
           await api('mg_firma_usun', { id: f.id });
           await odswiez('Usunięto firmę.');
@@ -801,11 +836,17 @@ async function firmy() {
   glowna.append(h('div.karta',
     h('h2', `Firmy (${lista.length})`),
     lista.length
-      ? h('table', h('tr', h('th', 'Nazwa'), h('th', 'Profil'), h('th', 'Członkowie'), h('th', 'Statki'), h('th', '')),
-        lista.map((f) => h('tr', h('td', f.nazwa), h('td', PROFILE_FIRM[f.profil] || f.profil),
+      ? h('table', h('tr', h('th', 'Nazwa'), h('th', 'Profil'), h('th', 'NPC — menedżer'), h('th', 'Rachunek'), h('th', 'Członkowie'), h('th', 'Statki'), h('th', '')),
+        lista.map((f) => {
+          const kierownik = f.dane.zaloga?.find((z) => z.npc_id === f.menedzer_id);
+          const konto = rachunki['f:' + f.id];
+          return h('tr', h('td', h('b', f.nazwa), f.spolka_symbol ? h('div.slaby', f.spolka_symbol) : null), h('td', PROFILE_FIRM[f.profil] || f.profil),
+          h('td', kierownik ? `${kierownik.imie} · ${kierownik.funkcja || 'menedżer'}` : '—'),
+          h('td', konto ? `${Number(konto.saldo).toLocaleString('pl-PL')} kr` : '—'),
           h('td', f.czlonkowie.map((c) => `${postac[c.uid] || '?'} (${ROLE_FIRMY[c.rola]})`).join(', ') || '—'),
           h('td', f.dane.flota?.length ?? 0),
-          h('td', btn('Edytuj', () => { const e = edytor(f); glowna.querySelector('#edytor-firmy').replaceChildren(e); e.scrollIntoView(); })))))
+          h('td', btn('Edytuj', () => { const e = edytor(f); glowna.querySelector('#edytor-firmy').replaceChildren(e); e.scrollIntoView(); })));
+        }))
       : h('p.slaby', 'Brak firm. Najpierw uzupełnij katalog (towary, planety), potem załóż firmę.')),
   h('div#edytor-firmy', edytor(null)));
 }

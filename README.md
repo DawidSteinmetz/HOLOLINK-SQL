@@ -116,6 +116,12 @@ ten sam format daty GST.
   Status spółki zmienia się w Katalogu. Wycofanie spółki ukrywa ją na giełdzie i blokuje nowe
   transakcje, zachowując dotychczasowe akcje, historię i kursy graczy. Do planet dojdzie później
   mapa (współrzędne, odległości).
+- **Spółki są firmami w systemie:** przy otwarciu Katalogu MG giełdowe i prywatne spółki
+  dostają powiązaną kartę firmy, profil działalności, skalę kapitału, NPC-menadżera (również
+  jako członka załogi) i rachunek bankowy. Brakujący rachunek jest jednorazowo zasilany
+  kapitałem początkowym; istniejące salda pozostają bez zmian. Profile biznesowe to transport,
+  wydobycie, produkcja i finanse. Ustawienia spółek i menadżerów są w Katalogu, a pełny rejestr
+  firm MG otwiera z tej samej strony.
 - Firma ma **profil**, który decyduje o interfejsie. Profil to para plików:
   `js/aplikacje/firma/<profil>.js` (zakładki) i logika w `api/firmy.php` (dane i operacje).
   Nowy profil: dopisać go do `PROFILE` w `js/aplikacje/firma.js`, `PROFILE_FIRM` w `api/firmy.php`

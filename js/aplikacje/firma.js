@@ -6,8 +6,11 @@ import { api } from '../rdzen/api.js';
 import transport from './firma/transport.js';
 import komorka from './firma/komorka.js';
 import agencja from './firma/agencja.js';
+import wydobycie from './firma/wydobycie.js';
+import produkcja from './firma/produkcja.js';
+import finanse from './firma/finanse.js';
 
-const PROFILE = { transport, komorka, agencja };
+const PROFILE = { transport, komorka, agencja, wydobycie, produkcja, finanse };
 
 const ROLE = { wlasciciel: 'Właściciel', menedzer: 'Menedżer', pracownik: 'Pracownik' };
 
