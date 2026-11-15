@@ -24,6 +24,162 @@ function gielda_ustawienia_domyslne(): array
     return ['powrot' => 0.08, 'zmiennosc_spolka' => 0.018, 'zmiennosc_towar' => 0.025, 'prowizja' => 0.005, 'historia_dni' => 365];
 }
 
+function gielda_klucz_nazwy(string $nazwa): string
+{
+    return mb_strtolower(trim(preg_replace('/\s+/u', ' ', $nazwa) ?? $nazwa));
+}
+
+function gielda_nowy_symbol(string $nazwa, array $uzyte): string
+{
+    $ascii = iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $nazwa);
+    $baza = strtoupper(preg_replace('/[^A-Z0-9]/', '', $ascii === false ? '' : $ascii) ?? '');
+    $baza = substr($baza ?: 'TOWAR', 0, 4);
+    for ($i = 0; $i < 1000; $i++) {
+        $symbol = $i === 0 ? substr($baza, 0, 6) : substr($baza, 0, 4) . str_pad((string) $i, 2, '0', STR_PAD_LEFT);
+        if (strlen($symbol) < 2) $symbol = 'TW' . $symbol;
+        if (!in_array($symbol, $uzyte, true)) return $symbol;
+    }
+    blad('Nie udało się nadać unikalnego symbolu giełdowego.');
+}
+
+// Normalizuje spółki katalogu i ogranicza status do dwóch jawnych wartości.
+function gielda_spolki_z_katalogu(array $lista, array $zajeteSymbole = []): array
+{
+    $wynik = [];
+    $symbole = [];
+    foreach ($lista as $s) {
+        if (!is_array($s)) blad('Każda spółka musi być obiektem.');
+        $nazwa = mb_substr(trim((string) ($s['nazwa'] ?? '')), 0, 80);
+        if ($nazwa === '') blad('Każda spółka musi mieć nazwę.');
+        $symbol = mb_strtoupper(trim((string) ($s['symbol'] ?? '')));
+        if ($symbol === '') $symbol = gielda_nowy_symbol($nazwa, [...$zajeteSymbole, ...$symbole]);
+        if (!preg_match('/^[A-Z0-9]{2,6}$/', $symbol)) blad("Symbol spółki „{$symbol}”: 2–6 wielkich liter lub cyfr.");
+        if (in_array($symbol, $symbole, true)) blad("Symbol spółki {$symbol} powtarza się.");
+        $symbole[] = $symbol;
+        $wynik[] = ['symbol' => $symbol, 'nazwa' => $nazwa,
+            'branza' => mb_strtolower(mb_substr(trim((string) ($s['branza'] ?? '')), 0, 40)),
+            'status' => ($s['status'] ?? '') === 'poza_gielda' ? 'poza_gielda' : 'notowana',
+            'gielda' => mb_strtolower(trim((string) ($s['gielda'] ?? ''))),
+            'cena' => max(1, (float) ($s['cena'] ?? 100)),
+            'pochodzenie' => mb_substr(trim((string) ($s['pochodzenie'] ?? '')), 0, 80)];
+    }
+    return $wynik;
+}
+
+// Każdy towar katalogu ma instrument. Dopasowanie opiera się na zapisanym symbolu,
+// identyfikatorze katalogowym, a dopiero potem na nazwie (dla starszych danych).
+function gielda_towary_z_katalogu(array $towary, array $instrumenty, array $gieldy): array
+{
+    $uzyte = array_column($instrumenty, 'symbol');
+    $domyslnaGielda = $gieldy[0]['id'] ?? '';
+    foreach ($towary as $t) {
+        $znaleziony = null;
+        foreach ($instrumenty as $idx => $i) {
+            if (($i['rodzaj'] ?? '') !== 'towar') continue;
+            if (($i['symbol'] ?? '') === ($t['gielda_symbol'] ?? '') || ($i['katalog_id'] ?? '') === ($t['id'] ?? '')
+                || gielda_klucz_nazwy($i['nazwa'] ?? '') === gielda_klucz_nazwy($t['nazwa'] ?? '')) { $znaleziony = $idx; break; }
+        }
+        if ($znaleziony === null) {
+            $symbol = gielda_nowy_symbol((string) $t['nazwa'], $uzyte);
+            $uzyte[] = $symbol;
+            $instrumenty[] = ['symbol' => $symbol, 'nazwa' => $t['nazwa'], 'rodzaj' => 'towar',
+                'kategoria' => $t['kategoria'] ?? '', 'gielda' => $domyslnaGielda,
+                'cena' => max(1, (float) ($t['cena'] ?? 1)), 'jednostka' => $t['jednostka'] ?? 'szt.',
+                'pochodzenie' => '', 'katalog_id' => $t['id']];
+            continue;
+        }
+        $i = $instrumenty[$znaleziony];
+        $instrumenty[$znaleziony] = array_merge($i, ['nazwa' => $t['nazwa'], 'rodzaj' => 'towar',
+            'kategoria' => $t['kategoria'] ?? '', 'cena' => max(1, (float) ($t['cena'] ?? 1)),
+            'jednostka' => $t['jednostka'] ?? 'szt.', 'katalog_id' => $t['id']]);
+    }
+    return $instrumenty;
+}
+
+function gielda_spolki_do_instrumentow(array $spolki, array $instrumenty, array $gieldy): array
+{
+    $domyslnaGielda = $gieldy[0]['id'] ?? '';
+    foreach ($spolki as $s) {
+        $idx = null;
+        foreach ($instrumenty as $j => $i) {
+            if (($i['rodzaj'] ?? '') === 'spolka' && ($i['symbol'] ?? '') === $s['symbol']) { $idx = $j; break; }
+        }
+        $gielda = in_array($s['gielda'], array_column($gieldy, 'id'), true) ? $s['gielda'] : $domyslnaGielda;
+        $wartosci = ['symbol' => $s['symbol'], 'nazwa' => $s['nazwa'], 'rodzaj' => 'spolka',
+            'kategoria' => $s['branza'], 'gielda' => $gielda, 'cena' => $s['cena'], 'jednostka' => 'akcja',
+            'pochodzenie' => $s['pochodzenie'], 'notowana' => $s['status'] === 'notowana'];
+        if ($idx === null) $instrumenty[] = $wartosci;
+        else $instrumenty[$idx] = array_merge($instrumenty[$idx], $wartosci);
+    }
+    return $instrumenty;
+}
+
+// Po edycji giełdy dopisuje brakujące towary i spółki do wspólnego katalogu, a następnie
+// odtwarza na giełdzie towary i spółki oznaczone w katalogu jako notowane.
+function gielda_katalog_z_instrumentow(array $def, array $k): array
+{
+    $towary = $k['towary'] ?? [];
+    $spolki = $k['spolki'] ?? [];
+    foreach ($def['instrumenty'] as $i) {
+        if ($i['rodzaj'] === 'towar') {
+            $jest = false;
+            foreach ($towary as &$t) {
+                if (($t['gielda_symbol'] ?? '') === $i['symbol'] || ($i['katalog_id'] ?? '') === ($t['id'] ?? '')
+                    || gielda_klucz_nazwy($t['nazwa'] ?? '') === gielda_klucz_nazwy($i['nazwa'])) {
+                    $t = array_merge($t, ['gielda_symbol' => $i['symbol'], 'nazwa' => $i['nazwa'],
+                        'kategoria' => $i['kategoria'], 'cena' => max(1, (int) round($i['cena'])),
+                        'jednostka' => $i['jednostka']]);
+                    $jest = true;
+                    break;
+                }
+            }
+            unset($t);
+            if (!$jest) $towary[] = ['id' => $i['katalog_id'] ?? bin2hex(random_bytes(6)), 'gielda_symbol' => $i['symbol'],
+                'nazwa' => $i['nazwa'], 'kategoria' => $i['kategoria'], 'masa' => 1,
+                'jednostka' => $i['jednostka'], 'cena' => max(1, (int) round($i['cena']))];
+        } else {
+            $jest = false;
+            foreach ($spolki as &$s) {
+                if ($s['symbol'] === $i['symbol'] || gielda_klucz_nazwy($s['nazwa']) === gielda_klucz_nazwy($i['nazwa'])) {
+                    $s = ['symbol' => $i['symbol'], 'nazwa' => $i['nazwa'], 'branza' => $i['kategoria'],
+                        'status' => ($i['notowana'] ?? true) ? 'notowana' : 'poza_gielda', 'gielda' => $i['gielda'],
+                        'cena' => $i['cena'], 'pochodzenie' => $i['pochodzenie']];
+                    $jest = true;
+                    break;
+                }
+            }
+            unset($s);
+            if (!$jest) $spolki[] = ['symbol' => $i['symbol'], 'nazwa' => $i['nazwa'], 'branza' => $i['kategoria'],
+                'status' => ($i['notowana'] ?? true) ? 'notowana' : 'poza_gielda', 'gielda' => $i['gielda'],
+                'cena' => $i['cena'], 'pochodzenie' => $i['pochodzenie']];
+        }
+    }
+    $towary = nadaj_id($towary);
+    $spolki = gielda_spolki_z_katalogu($spolki, array_column($def['instrumenty'], 'symbol'));
+    $instrumenty = gielda_towary_z_katalogu($towary, $def['instrumenty'], $def['gieldy']);
+    $instrumenty = gielda_spolki_do_instrumentow($spolki, $instrumenty, $def['gieldy']);
+    $def['instrumenty'] = $instrumenty;
+    $k['towary'] = $towary;
+    $k['spolki'] = $spolki;
+    return [$def, $k];
+}
+
+function gielda_uzgodnij_katalog(): array
+{
+    $def = gielda_definicje();
+    $k = wczytaj('katalog', []);
+    [$nowaDef, $nowyKatalog] = gielda_katalog_z_instrumentow($def, $k);
+    $nowaDef = gielda_z_wejscia($nowaDef);
+    if ($nowaDef !== $def) zmien('gielda', function (&$g) use ($nowaDef) { $g = $nowaDef; }, []);
+    if (($nowyKatalog['towary'] ?? []) !== ($k['towary'] ?? []) || ($nowyKatalog['spolki'] ?? []) !== ($k['spolki'] ?? [])) {
+        zmien('katalog', function (&$d) use ($nowyKatalog) {
+            $d['towary'] = $nowyKatalog['towary'];
+            $d['spolki'] = $nowyKatalog['spolki'];
+        }, []);
+    }
+    return [$nowaDef, $nowyKatalog];
+}
+
 // Początkowa giełda. MG zmienia ją w panelu; to tylko punkt startu.
 function gielda_domyslna(): array
 {
@@ -88,11 +244,9 @@ function gielda_domyslna(): array
 
 function gielda_definicje(): array
 {
-    static $cache = null;
-    if ($cache) return $cache;
     $g = wczytaj('gielda', null) ?? gielda_domyslna();
     $g['ustawienia'] = ($g['ustawienia'] ?? []) + gielda_ustawienia_domyslne();
-    return $cache = $g;
+    return $g;
 }
 
 // Planety, których dotyczy instrument: skąd pochodzi i gdzie jest notowany.
@@ -129,12 +283,14 @@ function gielda_dociagnij(): array
     $not = wczytaj('gielda_notowania', []);
     $brak = false;
     foreach ($g['instrumenty'] as $i) {
+        if (($i['notowana'] ?? true) !== true) continue;
         $n = $not[$i['symbol']] ?? null;
         if (!$n || date('Y-m-d', strtotime($n['od'] . ' +' . (count($n['c']) - 1) . ' days')) < $dzis) $brak = true;
     }
     if (!$brak) return $not;
     return zmien('gielda_notowania', function (&$not) use ($g, $dzis) {
         foreach ($g['instrumenty'] as $i) {
+            if (($i['notowana'] ?? true) !== true) continue;
             $n = $not[$i['symbol']] ?? null;
             if (!$n) {
                 $od = date('Y-m-d', strtotime($dzis . ' -' . max(30, (int) $g['ustawienia']['historia_dni']) . ' days'));
@@ -209,7 +365,9 @@ function gielda_z_wejscia(array $w): array
             'gielda' => $gid, 'cena' => $cena,
             'jednostka' => mb_substr(trim((string) ($x['jednostka'] ?? ($rodzaj === 'spolka' ? 'akcja' : 'szt.'))), 0, 20),
             'pochodzenie' => mb_substr(trim((string) ($x['pochodzenie'] ?? '')), 0, 80),
-        ] + (isset($x['zmiennosc']) && $x['zmiennosc'] !== '' ? ['zmiennosc' => max(0.001, min(0.3, (float) $x['zmiennosc']))] : []);
+        ] + (isset($x['zmiennosc']) && $x['zmiennosc'] !== '' ? ['zmiennosc' => max(0.001, min(0.3, (float) $x['zmiennosc']))] : [])
+          + (!empty($x['katalog_id']) ? ['katalog_id' => mb_substr((string) $x['katalog_id'], 0, 32)] : [])
+          + (array_key_exists('notowana', $x) ? ['notowana' => (bool) $x['notowana']] : []);
     }
     $u = (array) ($w['ustawienia'] ?? []) + gielda_ustawienia_domyslne();
     $ust = [
@@ -230,14 +388,15 @@ function obsluz_gielda(string $akcja, bool $post): void
             $u = wymagaj_logowania();
             $g = gielda_definicje();
             $not = gielda_dociagnij();
+            $portfel = gielda_portfel(wczytaj('gielda_portfele', []), $u['id']);
             $lista = [];
             foreach ($g['instrumenty'] as $i) {
+                if (($i['notowana'] ?? true) !== true && empty($portfel['pozycje'][$i['symbol']])) continue;
                 $c = $not[$i['symbol']]['c'] ?? [(float) $i['cena']];
                 $lista[] = array_diff_key($i, ['cena' => 1, 'zmiennosc' => 1]) + [
                     'kurs' => end($c), 'poprzedni' => $c[count($c) - 2] ?? end($c), 'seria' => array_slice($c, -30),
                 ];
             }
-            $portfel = gielda_portfel(wczytaj('gielda_portfele', []), $u['id']);
             $bank = wczytaj('bank', bank_pusty());
             odpowiedz([
                 'dzien' => date('Y-m-d'), 'gieldy' => $g['gieldy'], 'instrumenty' => $lista, 'prowizja' => $g['ustawienia']['prowizja'],
@@ -249,7 +408,9 @@ function obsluz_gielda(string $akcja, bool $post): void
             wymagaj_logowania();
             $sym = (string) ($_GET['s'] ?? '');
             $dni = max(5, min(GIELDA_MAX_DNI, (int) ($_GET['dni'] ?? 90)));
-            $n = gielda_dociagnij()[$sym] ?? null;
+            $instrument = gielda_instrument($sym);
+            $n = $instrument && (($instrument['notowana'] ?? true) || !empty(gielda_portfel(wczytaj('gielda_portfele', []), ja()['id'])['pozycje'][$sym]))
+                ? (gielda_dociagnij()[$sym] ?? null) : null;
             if (!$n) blad('Brak notowań tego instrumentu.', 404);
             $c = array_slice($n['c'], -$dni);
             $od = date('Y-m-d', strtotime($n['od'] . ' +' . (count($n['c']) - count($c)) . ' days'));
@@ -264,6 +425,7 @@ function obsluz_gielda(string $akcja, bool $post): void
             $ilosc = (int) ($w['ilosc'] ?? 0);
             if ($ilosc <= 0 || $ilosc > 1000000) blad('Podaj ilość większą od zera.');
             $i = gielda_instrument($sym) ?? blad('Ten instrument nie jest notowany.', 404);
+            if (($i['notowana'] ?? true) !== true) blad('Ta spółka nie jest obecnie notowana.', 409);
             $c = gielda_dociagnij()[$sym]['c'];
             $kurs = (float) end($c);
             $wartosc = (int) round($kurs * $ilosc);
@@ -300,6 +462,7 @@ function obsluz_gielda(string $akcja, bool $post): void
 
         case 'mg_gielda':
             wymagaj_mg();
+            gielda_uzgodnij_katalog();
             $g = gielda_definicje();
             $not = gielda_dociagnij();
             $kursy = array_map(fn($n) => end($n['c']), $not);
@@ -322,8 +485,14 @@ function obsluz_gielda(string $akcja, bool $post): void
                     if (!in_array($sym, $symbole, true)) blad("Nie można usunąć {$sym}: gracze mają go w portfelach.");
                 }
             }
+            [$nowa, $kat] = gielda_katalog_z_instrumentow($nowa, katalog());
+            $nowa = gielda_z_wejscia($nowa);
             zmien('gielda', function (&$g) use ($nowa) {
                 $g = $nowa;
+            }, []);
+            zmien('katalog', function (&$k) use ($kat) {
+                $k['towary'] = $kat['towary'];
+                $k['spolki'] = $kat['spolki'];
             }, []);
             odpowiedz(['ok' => true]);
 

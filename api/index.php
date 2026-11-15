@@ -1,14 +1,15 @@
 <?php
 // Jedno wspólne API dla całego datapada i panelu MG.
 // Wywołanie: api/?a=<akcja>   (GET do odczytu, POST z JSON-em do zmian)
-// Dane leżą w api/dane/*.php (poza gitem). Każdy plik zaczyna się od linii PHP, która
-// zwraca 404, więc nawet bez .htaccess (np. na nginx) nikt nie pobierze ich z sieci.
+// Trwałe dane aplikacji przechowuje SQL. Pliki w api/dane/ służą tylko do importu
+// danych ze starszych wersji podczas migracji.
 
 declare(strict_types=1);
 
 const DANE = __DIR__ . '/dane';
 const FRAKCJE = ['Rebelia', 'Imperium', 'Syndykat'];
 const STRAZNIK = "<?php http_response_code(404); exit; ?>\n";
+require_once __DIR__ . '/polaczenie.php';
 
 date_default_timezone_set('Europe/Warsaw');
 require __DIR__ . '/bank.php';
@@ -53,6 +54,10 @@ function plik(string $nazwa): string
 
 function wczytaj(string $nazwa, $domyslne = [])
 {
+    $q = polaczenie_bazy()->prepare('SELECT payload FROM datapad_dane WHERE nazwa = ?');
+    $q->execute([$nazwa]);
+    $tresc = $q->fetchColumn();
+    if ($tresc !== false) return json_decode((string) $tresc, true) ?? $domyslne;
     $f = plik($nazwa);
     if (!is_file($f)) {
         return $domyslne;
@@ -62,24 +67,40 @@ function wczytaj(string $nazwa, $domyslne = [])
         $tresc = substr($tresc, strlen(STRAZNIK));
     }
     $v = json_decode($tresc, true);
-    return $v ?? $domyslne;
+    if (is_array($v)) {
+        $q = polaczenie_bazy()->prepare('INSERT IGNORE INTO datapad_dane (nazwa, payload) VALUES (?, ?)');
+        $q->execute([$nazwa, json_encode($v, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)]);
+        return $v;
+    }
+    return $domyslne;
 }
 
-// Odczyt-zmiana-zapis pod blokadą pliku, żeby dwa tablety nie nadpisały sobie danych.
+// Odczyt-zmiana-zapis w transakcji z blokadą rekordu, żeby zapisy się nie nadpisały.
 function zmien(string $nazwa, callable $fn, $domyslne = [])
 {
-    $blokada = fopen(plik($nazwa) . '.lock', 'c');
-    flock($blokada, LOCK_EX);
+    $db = polaczenie_bazy();
+    $db->beginTransaction();
     try {
-        $dane = wczytaj($nazwa, $domyslne);
+        $q = $db->prepare('INSERT IGNORE INTO datapad_dane (nazwa, payload) VALUES (?, ?)');
+        $q->execute([$nazwa, json_encode($domyslne, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)]);
+        $nowy = $q->rowCount() === 1;
+        $q = $db->prepare('SELECT payload FROM datapad_dane WHERE nazwa = ? FOR UPDATE');
+        $q->execute([$nazwa]);
+        $payload = $q->fetchColumn();
+        $dane = json_decode((string) $payload, true) ?? $domyslne;
+        if ($nowy && is_file(plik($nazwa))) {
+            $stare = (string) file_get_contents(plik($nazwa));
+            if (str_starts_with($stare, STRAZNIK)) $stare = substr($stare, strlen(STRAZNIK));
+            $dane = json_decode($stare, true) ?? $dane;
+        }
         $wynik = $fn($dane);
-        $tmp = plik($nazwa) . '.tmp';
-        file_put_contents($tmp, STRAZNIK . json_encode($dane, JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
-        rename($tmp, plik($nazwa));
+        $q = $db->prepare('UPDATE datapad_dane SET payload = ?, zmieniono = CURRENT_TIMESTAMP WHERE nazwa = ?');
+        $q->execute([json_encode($dane, JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR), $nazwa]);
+        $db->commit();
         return $wynik;
-    } finally {
-        flock($blokada, LOCK_UN);
-        fclose($blokada);
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) $db->rollBack();
+        throw $e;
     }
 }
 
@@ -172,6 +193,13 @@ obsluz_gielda($akcja, $post);
 
 switch ($akcja) {
 
+    case 'mapa_dane':
+        $planety = polaczenie_bazy()->query('SELECT nazwa,region,x,y,grawitacja,slonca,ksiezyce,doba,rok,srednica FROM mapa_planety ORDER BY id')
+            ->fetchAll(PDO::FETCH_NUM);
+        $szlaki = polaczenie_bazy()->query('SELECT nazwa,waznosc,dlugosc,sciezki FROM mapa_szlaki ORDER BY id')->fetchAll();
+        $szlaki = array_map(fn($s) => ['n' => $s['nazwa'], 'z' => (int) $s['waznosc'], 'dl' => (float) $s['dlugosc'], 'p' => json_decode($s['sciezki'], true)], $szlaki);
+        odpowiedz(['planety' => $planety, 'szlaki' => $szlaki]);
+
     // ----- sesja -----
 
     case 'stan':
@@ -230,14 +258,15 @@ switch ($akcja) {
             'id' => id(),
             'data' => $data,
             'status' => $status,
-            'notatka' => pole('notatka', 300),
+            'notatka' => pole('notatka', 120),
             'uid' => $u['id'],
-            'postac' => $u['postac'],
+            // Można zgłosić dowolną postać (domyślnie własną), jak w dawnym kalendarzu.
+            'postac' => pole('postac', 40) ?: $u['postac'],
             'czas' => date('c'),
         ];
         zmien('harmonogram', function (&$w) use ($wpis) {
-            // Jedna deklaracja na postać na dzień: nowa zastępuje starą.
-            $w = array_values(array_filter($w, fn($x) => !($x['uid'] === $wpis['uid'] && $x['data'] === $wpis['data'])));
+            // Jedna deklaracja danego użytkownika dla konkretnej postaci na dzień.
+            $w = array_values(array_filter($w, fn($x) => !($x['uid'] === $wpis['uid'] && $x['data'] === $wpis['data'] && mb_strtolower($x['postac']) === mb_strtolower($wpis['postac']))));
             $w[] = $wpis;
         });
         odpowiedz(['wpis' => $wpis]);

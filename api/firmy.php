@@ -36,7 +36,7 @@ function katalog(): array
 {
     $k = wczytaj('katalog', []);
     return ['towary' => $k['towary'] ?? [], 'planety' => $k['planety'] ?? [], 'oferty' => $k['oferty'] ?? [],
-        'lokacje' => $k['lokacje'] ?? [], 'ustawienia' => $k['ustawienia'] ?? ['tempo' => 1]];
+        'lokacje' => $k['lokacje'] ?? [], 'spolki' => $k['spolki'] ?? [], 'ustawienia' => $k['ustawienia'] ?? ['tempo' => 1]];
 }
 
 // Katalog wysyłany do datapada: bez położenia na mapie i bez listy, kto widzi planetę.
@@ -44,6 +44,7 @@ function katalog(): array
 function katalog_dla_gracza(): array
 {
     $k = katalog();
+    unset($k['spolki']);
     $k['planety'] = array_map(fn($p) => array_diff_key($p, ['mapa' => 1, 'widoczna_dla' => 1]), $k['planety']);
     return $k;
 }
@@ -506,13 +507,16 @@ function obsluz_firmy(string $akcja, bool $post): void
 
         case 'mg_katalog':
             wymagaj_mg();
-            odpowiedz(['katalog' => katalog()]);
+            gielda_uzgodnij_katalog();
+            odpowiedz(['katalog' => katalog(), 'gieldy' => gielda_definicje()['gieldy']]);
 
         case 'mg_katalog_zapisz':
             if (!$post) blad('Zła metoda.', 405);
             wymagaj_mg();
             $w = wejscie();
             $towary = nadaj_id((array) ($w['towary'] ?? []));
+            $gielda = gielda_definicje();
+            $spolki = gielda_spolki_z_katalogu((array) ($w['spolki'] ?? []), array_column($gielda['instrumenty'], 'symbol'));
             $planety = nadaj_id((array) ($w['planety'] ?? []));
             foreach ($towary as &$t) {
                 if (trim((string) ($t['nazwa'] ?? '')) === '') blad('Każdy towar musi mieć nazwę.');
@@ -522,6 +526,45 @@ function obsluz_firmy(string $akcja, bool $post): void
                 $t['kategoria'] = (string) ($t['kategoria'] ?? '');
             }
             unset($t);
+            // Każdy towar z giełdy jest też dostępny w katalogu firm. Zachowujemy ID towarów
+            // i symbole giełdowe, aby magazyny oraz portfele nie straciły powiązań.
+            foreach ($gielda['instrumenty'] as $i) {
+                if (($i['rodzaj'] ?? '') !== 'towar') continue;
+                $znaleziony = false;
+                foreach ($towary as &$t) {
+                    if (($t['gielda_symbol'] ?? '') === $i['symbol'] || ($i['katalog_id'] ?? '') === ($t['id'] ?? '')
+                        || mb_strtolower(trim($t['nazwa'] ?? '')) === mb_strtolower(trim($i['nazwa'] ?? ''))) {
+                        $t['gielda_symbol'] = $i['symbol'];
+                        $znaleziony = true;
+                        break;
+                    }
+                }
+                unset($t);
+                if (!$znaleziony) $towary[] = ['id' => $i['katalog_id'] ?? id(), 'gielda_symbol' => $i['symbol'],
+                    'nazwa' => $i['nazwa'], 'kategoria' => $i['kategoria'] ?? '', 'masa' => 1,
+                    'jednostka' => $i['jednostka'] ?? 'szt.', 'cena' => max(1, (int) round($i['cena']))];
+            }
+            $towary = nadaj_id($towary);
+            foreach ($towary as &$t) {
+                $t['masa'] = max(1, (int) ($t['masa'] ?? 1));
+                $t['jednostka'] = (string) ($t['jednostka'] ?? 't');
+                $t['cena'] = max(1, (int) ($t['cena'] ?? 10));
+                $t['kategoria'] = (string) ($t['kategoria'] ?? '');
+            }
+            unset($t);
+            // Spółki giełdowe zawsze mają wpis w katalogu. W katalogu można też oznaczyć
+            // podmiot jako nienotowany, bez usuwania akcji posiadanych przez graczy.
+            foreach ($gielda['instrumenty'] as $i) {
+                if (($i['rodzaj'] ?? '') !== 'spolka') continue;
+                $jest = false;
+                foreach ($spolki as &$s) {
+                    if ($s['symbol'] === $i['symbol'] || mb_strtolower($s['nazwa']) === mb_strtolower($i['nazwa'])) { $jest = true; break; }
+                }
+                unset($s);
+                if (!$jest) $spolki[] = ['symbol' => $i['symbol'], 'nazwa' => $i['nazwa'], 'branza' => $i['kategoria'] ?? '',
+                    'status' => ($i['notowana'] ?? true) ? 'notowana' : 'poza_gielda', 'gielda' => $i['gielda'], 'cena' => $i['cena'], 'pochodzenie' => $i['pochodzenie'] ?? ''];
+            }
+            $spolki = gielda_spolki_z_katalogu($spolki, array_column($gielda['instrumenty'], 'symbol'));
             // Specyfika planety: { "nazwa towaru albo kategorii": mnożnik ceny }.
             // Zapisujemy jako t:<id towaru> albo k:<kategoria>; w edytorze MG wraca do nazw.
             $kategorie = array_unique(array_map(fn($t) => mb_strtolower($t['kategoria']), $towary));
@@ -598,8 +641,13 @@ function obsluz_firmy(string $akcja, bool $post): void
             }
             unset($l);
             $tempo = max(0.05, min(60, (float) ($w['tempo'] ?? 1)));
-            zmien('katalog', function (&$k) use ($towary, $planety, $oferty, $lokacje, $tempo) {
-                $k = ['towary' => $towary, 'planety' => $planety, 'oferty' => $oferty, 'lokacje' => $lokacje, 'ustawienia' => ['tempo' => $tempo]];
+            $instrumenty = gielda_towary_z_katalogu($towary, $gielda['instrumenty'], $gielda['gieldy']);
+            $instrumenty = gielda_spolki_do_instrumentow($spolki, $instrumenty, $gielda['gieldy']);
+            $nowaGielda = gielda_z_wejscia(['gieldy' => $gielda['gieldy'], 'instrumenty' => $instrumenty, 'ustawienia' => $gielda['ustawienia']]);
+            zmien('gielda', function (&$g) use ($nowaGielda) { $g = $nowaGielda; }, []);
+            zmien('katalog', function (&$k) use ($towary, $planety, $oferty, $lokacje, $spolki, $tempo) {
+                $k = ['towary' => $towary, 'planety' => $planety, 'oferty' => $oferty, 'lokacje' => $lokacje,
+                    'spolki' => $spolki, 'ustawienia' => ['tempo' => $tempo]];
             });
             odpowiedz(['ok' => true]);
 

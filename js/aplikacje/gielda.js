@@ -91,12 +91,12 @@ export default {
     // ---------- notowania ----------
 
     function notowania() {
-      const kategorie = [...new Set(d.instrumenty.filter((i) => !filtr.rodzaj || i.rodzaj === filtr.rodzaj).map((i) => i.kategoria))].sort();
+      const kategorie = [...new Set(d.instrumenty.filter((i) => i.notowana !== false && (!filtr.rodzaj || i.rodzaj === filtr.rodzaj)).map((i) => i.kategoria))].sort();
       const lista = h('div.gielda-lista');
       const szukaj = h('input', { placeholder: 'Symbol lub nazwa', value: filtr.szukaj, spellcheck: 'false' });
       const rysujListe = () => {
         const q = filtr.szukaj.trim().toLowerCase();
-        const widoczne = d.instrumenty.filter((i) => (!filtr.gielda || i.gielda === filtr.gielda) && (!filtr.rodzaj || i.rodzaj === filtr.rodzaj)
+        const widoczne = d.instrumenty.filter((i) => i.notowana !== false && (!filtr.gielda || i.gielda === filtr.gielda) && (!filtr.rodzaj || i.rodzaj === filtr.rodzaj)
           && (!filtr.kategoria || i.kategoria === filtr.kategoria) && (!q || i.symbol.toLowerCase().includes(q) || i.nazwa.toLowerCase().includes(q)));
         wyczysc(lista).append(...(widoczne.length ? widoczne.map((i) => h('button.gielda-wiersz', { onclick: () => { wybrany = i.symbol; rysuj(); } },
           h('span.gielda-symbol', i.symbol),
@@ -163,6 +163,10 @@ export default {
       const odswiezPodsumowanie = () => {
         const { n, wartosc, prowizja } = licz();
         wyczysc(podsumowanie).append(`Wartość ${kr(wartosc)} · prowizja ${kr(prowizja)} · kupno: ${kr(wartosc + prowizja)}, sprzedaż: ${kr(Math.max(0, wartosc - prowizja))}`);
+        if (i.notowana === false) {
+          wyczysc(akcje).append(h('p.slaby', 'Ta spółka jest poza giełdą. Zachowane akcje pozostają widoczne w portfelu, ale nie można nimi handlować.'));
+          return;
+        }
         wyczysc(akcje).append(
           h('button.przycisk', { disabled: !n || wartosc + prowizja > d.saldo, onclick: () => zatwierdz('kup') }, 'Kup'),
           h('button.przycisk.drugi', { disabled: !n || !poz || n > poz.ilosc, onclick: () => zatwierdz('sprzedaj') }, 'Sprzedaj'));
@@ -196,7 +200,7 @@ export default {
       return h('div',
         h('div.panel',
           h('div.rzad', h('div.rozpycha', h('h2', { style: 'margin:0' }, `${i.nazwa}`),
-            h('div.slaby.maly-tekst', `${i.symbol} · ${i.rodzaj === 'spolka' ? 'spółka' : 'towar'} · ${i.kategoria} · ${nazwaGieldy(i.gielda)}${i.pochodzenie ? ' · ' + i.pochodzenie : ''}`)),
+            h('div.slaby.maly-tekst', `${i.symbol} · ${i.rodzaj === 'spolka' ? 'spółka' : 'towar'}${i.notowana === false ? ' · poza giełdą' : ` · ${i.kategoria} · ${nazwaGieldy(i.gielda)}`}${i.pochodzenie ? ' · ' + i.pochodzenie : ''}`)),
             h('div', { style: 'text-align:right' }, h('div.gielda-duzy-kurs', kurs(i.kurs)), h('div.maly-tekst', zmiana(i.kurs, i.poprzedni), h('span.slaby', ` za ${i.jednostka}`)))),
           przyciski, miejsce, opis),
         h('div.panel',

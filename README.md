@@ -28,11 +28,11 @@ manifest.webmanifest     instalacja na tablecie, pełny ekran, poziomo
 sw.js                    pliki systemu w pamięci tabletu (działa przy słabym zasięgu)
 css/system.css           cały wygląd, kolory w zmiennych na :root
 js/system.js             start → rozruch → blokada → pulpit, menedżer aplikacji, alfabet
-js/rdzen/narzedzia.js    h() do budowania elementów, czas GST, pamięć urządzenia
+js/rdzen/narzedzia.js    h() do budowania elementów, czas i daty GST, pamięć urządzenia
 js/rdzen/api.js          łączność z api/ (błędy w języku świata)
 js/rdzen/urzadzenie.js   producent, model i nazwa systemu (zmieniajcie tutaj)
 js/aplikacje/*.js        aplikacje: holonet, dekoder, harmonogram, frakcja, ustawienia
-api/index.php            jedno API dla wszystkiego (PHP 8.1+, dane w plikach)
+api/index.php            jedno API dla wszystkiego (PHP 8.1+, PDO i SQL)
 api/bank.php             logika banku (przelewy, odbiorcy, stałe dochody)
 api/firmy.php            firmy (profile), przewozy i wspólny katalog towarów i planet
 api/komorka.php          profil komórki: misje
@@ -46,8 +46,9 @@ gm/wydarzenia.js         komponent wydarzeń osadzany w kilku zakładkach panelu
 api/karty.php            karta postaci: statystyki, reputacja, status, pozycja, notatnik
 api/ruch.php             przemieszczanie, przygotowanie statku, gotówka (bankomat, sklep)
 js/rdzen/scena.js        animacje tła: gwiazdy, skok, tunel, wyjście, planety
-assets/mapa/             dane mapy galaktyki: planety.json, szlaki.json (pliki systemu)
-api/dane/                dane gry, tylko na serwerze (poza gitem)
+api/schema.sql           schemat bazy danych (MySQL 8 / MariaDB 10.6)
+api/mapa_seed.sql        dane startowe planet i szlaków w postaci poleceń SQL
+api/dane/                źródło importu z wcześniejszych wersji (poza gitem)
 gm/                      panel MG: konta, dokumenty, holonet, frakcje, harmonogram
 assets/czcionki/         czcionka Aurebesh
 narzedzia/czcionka/      generator czcionki Aurebesh
@@ -67,13 +68,29 @@ Bez frameworków i bez budowania. Pliki trafiają na serwer w takiej postaci, w 
 | Giełda | notowania spółek i towarów, wykresy, kupno i sprzedaż przez Bank, portfel | dawne CDEX |
 | Bank | saldo i historia, przelewy na numer rachunku (z potwierdzeniem właściciela), stali odbiorcy | nowe |
 | Dekoder | odbiór dokumentu po sygnaturze, poziomy uprawnień, katalogi, animacja dekodowania | `/dekoder/gracz/` |
-| Harmonogram | kalendarz miesięczny, deklaracje obecności postaci (jedna na dzień) | `/calendar/` |
+| Kalendarz | kalendarz sesji z pięciodniowym tygodniem, świętami H i sześcioma kulturami | `/calendar/` |
 | Sieć frakcji | planety i instalacje, zasoby (gracze zmieniają stany), drzewo dowodzenia | `/frakcja/gracz/` |
 | Ustawienia | alfabet (moduł ZPH), jasność, dane postaci, „o urządzeniu”, blokada | nowe |
 
 Nowa aplikacja to plik w `js/aplikacje/`, który eksportuje
 `{ id, nazwa, ikona, uruchom(kontener, ctx) }`. Trzeba go jeszcze dopisać do listy `APLIKACJE`
 w `js/system.js` i do `PLIKI` w `sw.js`. Wzorem może być `ustawienia.js`, najprostsza z aplikacji.
+
+## Kalendarz sesji
+
+Aplikacja `js/aplikacje/kalendarz.js` zastępuje wcześniejszy Harmonogram. Korzysta z tych samych
+akcji API (`harmonogram`, `harmonogram_dodaj`, `harmonogram_usun`) i tych samych dat ISO w bazie.
+Zmienił się kalendarz i wygląd aplikacji:
+
+- Miesiąc gry odpowiada miesiącowi realnemu, a rok gry to rok realny minus 2010.
+- Tydzień ma pięć dni. Miesiąc zawiera 25 albo 30 zwykłych dni; pozostałe dni są świętami H.
+- Sześć kultur zmienia nazwy miesięcy, dni i świąt oraz kolor akcentu. Wybór zapamiętuje tablet.
+- Gracz może zgłosić dowolną postać, domyślnie własną. Wpis ma status i notatkę do 120 znaków;
+  ten sam użytkownik może zgłosić różne postacie na ten sam dzień.
+- Panel MG nadal zarządza wpisami w zakładce **Kalendarz**. Eksport tworzy plik CSV.
+
+Daty gry są też używane w pozostałych widokach systemu, więc pulpit, blokada i aplikacje pokazują
+ten sam format daty GST.
 
 ## Bank
 
@@ -94,8 +111,11 @@ w `js/system.js` i do `PLIKI` w `sw.js`. Wzorem może być `ustawienia.js`, najp
 ## Firmy
 
 - **Wspólny katalog** (panel MG → Katalog): towary (nazwa, kategoria, masa w t na jednostkę,
-  jednostka) i planety. Tę samą listę towarów użyje giełda. Do planet dojdzie później mapa
-  (współrzędne, odległości).
+  jednostka), spółki (notowane i poza giełdą) oraz planety. Każdy towar katalogu ma instrument
+  giełdowy, a towary i spółki z giełdy są dopisywane do katalogu przy jego otwarciu przez MG.
+  Status spółki zmienia się w Katalogu. Wycofanie spółki ukrywa ją na giełdzie i blokuje nowe
+  transakcje, zachowując dotychczasowe akcje, historię i kursy graczy. Do planet dojdzie później
+  mapa (współrzędne, odległości).
 - Firma ma **profil**, który decyduje o interfejsie. Profil to para plików:
   `js/aplikacje/firma/<profil>.js` (zakładki) i logika w `api/firmy.php` (dane i operacje).
   Nowy profil: dopisać go do `PROFILE` w `js/aplikacje/firma.js`, `PROFILE_FIRM` w `api/firmy.php`
@@ -205,7 +225,7 @@ wybiera MG (np. „Biuro Analiz Rynkowych Sektora”). Zakładki:
 - **Rozliczenie w Banku:** zlecenie obciąża albo uznaje rachunek postaci („CDEX — rozliczenia
   giełdowe”), z prowizją (domyślnie 0,5%, min. 1 kr). Nie da się kupić za więcej, niż jest
   na koncie, ani sprzedać więcej, niż jest w portfelu.
-- **Dane** (JSON w `api/dane`): `gielda` (giełdy, instrumenty, ustawienia), `gielda_notowania`
+- **Dane** (`datapad_dane` w SQL; dokumenty domenowe w kolumnie JSON): `gielda` (giełdy, instrumenty, ustawienia), `gielda_notowania`
   (kurs zamknięcia na każdy dzień, do 2 lat), `gielda_portfele`. Domyślny zestaw jest
   w `gielda_domyslna()`. Kategorie towarów są te same co w katalogu firm: paliwo, surowce,
   żywność, medycyna, technika, broń, luksus, przyprawy.
@@ -216,6 +236,10 @@ wybiera MG (np. „Biuro Analiz Rynkowych Sektora”). Zakładki:
 - **Panel MG → Giełda:** podgląd kursu z prognozą (z wydarzeniami i bez, także dla szkicu
   wydarzenia z formularza), kursy dnia, portfele graczy, edytor giełd i instrumentów (JSON),
   ustawienia skryptu, „Przelicz całą historię”.
+- **Katalog i giełda są uzgadniane automatycznie:** dodanie towaru w Katalogu dodaje go jako
+  instrument giełdowy; dodanie towaru na giełdzie dopisuje go do Katalogu. Spółki giełdowe
+  trafiają do Katalogu. Każda spółka ma status „Firma notowana na giełdzie” albo „Firma poza
+  giełdą”; nienotowane spółki nie pojawiają się w notowaniach i nie przyjmują zleceń.
 
 ## Wydarzenia
 
@@ -336,10 +360,9 @@ Aplikacja „Karta postaci” (pierwsza na pulpicie). Wszystko oprócz notatnika
   nadprzestrzenne (główne widać zawsze, lokalne po przybliżeniu) i siatka. Przesuwanie palcem,
   szczypanie albo kółko myszy, wyszukiwarka planet i szlaków, karta planety (region,
   współrzędne, grawitacja, słońca i księżyce, doba i rok, średnica, odległość od postaci).
-- Dane leżą w `assets/mapa/planety.json` (`[nazwa, region, x, y, grawitacja, słońca, księżyce,
-  doba, rok, średnica]`, region to numer z listy `REGIONY` w `mapa.js`) i `assets/mapa/szlaki.json`
-  (`n` nazwa, `z` ważność 1–5, `dl` długość, `p` ścieżki jako płaskie listy `x,y,x,y…`).
-  Są w pamięci tabletu, więc mapa działa bez zasięgu.
+- Planety i szlaki leżą w SQL (`mapa_planety`, `mapa_szlaki`). Geometria szlaku jest
+  przechowywana jako kolumna JSON. API przesyła dane mapy do tabletu, a service worker buforuje
+  je do pracy bez zasięgu.
 - Pozycję podaje `api/?a=mapa` (`api/ruch.php`): planeta postaci, stan (powierzchnia, orbita,
   nadprzestrzeń), cel skoku i statki jej firm. **Planety z katalogu MG łączą się z mapą po nazwie**
   (bez wielkości liter, ogonków i spacji), więc planeta w katalogu powinna nazywać się tak jak
@@ -352,8 +375,8 @@ Aplikacja „Karta postaci” (pierwsza na pulpicie). Wszystko oprócz notatnika
   datapada (`katalog_dla_gracza()`) nie zawiera tych dwóch pól. Na mapie planeta zastrzeżona
   to różowy romb z podpisem i znaczkiem „Dane zastrzeżone” na karcie.
 - **Planety tajne w świecie gry** (zaginione, ukryte, obszary nieznane Republice i Imperium)
-  usunięto z `assets/mapa/`. Ich dane leżą w `api/dane/planety_ukryte.php` (poza gitem, w formacie
-  gotowym do katalogu: `nazwa`, `mapa` z x, y i regionem, `dane_mapy`). Odsłonięcie planety to
+  trzyma się w `datapad_dane` po stronie serwera (wpis `planety_ukryte`, poza publiczną mapą,
+  w formacie gotowym do katalogu: `nazwa`, `mapa` z x, y i regionem, `dane_mapy`). Odsłonięcie planety to
   wpis w katalogu MG z polami `mapa` i ewentualnie `widoczna_dla`.
 - Mapa nie zmienia zasad skoku: Nawigacja dalej porównuje współrzędne z polem `wspolrzedne`
   w katalogu.
@@ -400,13 +423,17 @@ Aplikacja „Karta postaci” (pierwsza na pulpicie). Wszystko oprócz notatnika
   logowań jest jedno.
 - Hasła są przechowywane tylko jako hash (`password_hash`). MG nie widzi haseł, może je tylko
   ustawić na nowe.
-- Każdy plik w `api/dane/` zaczyna się od linii PHP, która zwraca 404, więc danych nie da się
-  pobrać z sieci nawet bez `.htaccess`.
+- Dane kont, dokumentów i gry są przechowywane w bazie, poza katalogiem publicznych zasobów.
 - Zapisy (harmonogram, zasoby, dekoder) wymagają zalogowania. Każde żądanie POST musi mieć
   nagłówek `X-Datapad: 1`, co chroni przed formularzami wysyłanymi z obcych stron.
 - Dokument może wymagać poziomu uprawnień (1–9) i przynależności do frakcji.
 
 ## Uruchomienie lokalnie
+
+Najpierw utwórz bazę SQL, wykonaj `api/schema.sql`, skopiuj
+`api/konfiguracja-bazy.example.php` do `api/konfiguracja-bazy.php` i wpisz dane bazy.
+Następnie uruchom `php api/importuj_mape.php`. Jeśli przenosisz istniejącą instalację, uruchom również
+`php api/importuj_dane.php` przed pierwszym wejściem graczy.
 
 ```bash
 php -S 127.0.0.1:8080
@@ -418,11 +445,17 @@ Przy pierwszym wejściu panel MG pozwala założyć konto MG. W panelu MG zakła
 ## Wdrożenie na b0r5.pl
 
 1. Wgrać zawartość repo do korzenia domeny, **bez ruszania `/_/` i `/__/`**.
-2. Upewnić się, że PHP na serwerze ma wersję co najmniej 8.1 i może zapisywać w `api/dane/`.
-3. Wejść na `/gm/`, założyć konto MG, potem konta graczy.
-4. Na tabletach: Chrome → „Dodaj do ekranu głównego”. Uruchomiony z ikony datapad działa na
+2. Utworzyć bazę MySQL 8.0+ lub MariaDB 10.6+ i włączyć rozszerzenie PHP PDO MySQL.
+3. Utworzyć plik `api/konfiguracja-bazy.php` na serwerze, kopiując
+   `api/konfiguracja-bazy.example.php`; wpisać host, nazwę bazy, użytkownika i hasło z panelu.
+   Plik jest wykluczony z gita. Nie umieszczać go w publicznym repozytorium.
+4. Wykonać `api/schema.sql`, a następnie uruchomić `php api/importuj_mape.php` z katalogu repo.
+   Przy przenoszeniu istniejącej instalacji uruchomić także `php api/importuj_dane.php`.
+   Po sprawdzeniu importu wykonaj kopię zapasową, a potem usuń stare pliki serwerowe.
+5. Wejść na `/gm/`, założyć konto MG, potem konta graczy.
+6. Na tabletach: Chrome → „Dodaj do ekranu głównego”. Uruchomiony z ikony datapad działa na
    pełnym ekranie, bez paska przeglądarki.
-5. Po zmianie plików systemu podbić `WERSJA` w `sw.js`, żeby tablety pobrały nowe pliki.
+7. Po zmianie plików systemu podbić `WERSJA` w `sw.js`, żeby tablety pobrały nowe pliki.
 
 Stare adresy (`/calendar/`, `/frakcja/`, `/dekoder/`, `/recruitment/`) przestaną być potrzebne.
 Warto ustawić przekierowania na `/`.

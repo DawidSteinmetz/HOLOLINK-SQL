@@ -81,7 +81,7 @@ function zalozMG() {
 function panel(u) {
   document.getElementById('kto').textContent = 'Zalogowano: ' + u.login;
   menu.hidden = false;
-  const zakladki = { stan: 'Stan postaci', karty: 'Karty postaci', konta: 'Konta', bank: 'Bank', gielda: 'Giełda', wydarzenia: 'Wydarzenia', firmy: 'Firmy', rekrutacja: 'Rekrutacja', katalog: 'Katalog', dokumenty: 'Dokumenty', kanaly: 'Kanały', holonet: 'Holonet', frakcje: 'Frakcje', harmonogram: 'Harmonogram' };
+  const zakladki = { stan: 'Stan postaci', karty: 'Karty postaci', konta: 'Konta', bank: 'Bank', gielda: 'Giełda', wydarzenia: 'Wydarzenia', firmy: 'Firmy', rekrutacja: 'Rekrutacja', katalog: 'Katalog', dokumenty: 'Dokumenty', kanaly: 'Kanały', holonet: 'Holonet', frakcje: 'Frakcje', harmonogram: 'Kalendarz' };
   const rysujMenu = () => wyczysc(menu).append(
     ...Object.entries(zakladki).map(([k, n]) => h('button' + (k === biezaca ? '.on' : ''), { onclick: () => { biezaca = k; rysujMenu(); otworz(); } }, n)),
     h('button', { onclick: async () => { await api('wyloguj', {}); location.reload(); } }, 'Wyloguj'));
@@ -237,7 +237,7 @@ const WZOR_PLANET = [
 ];
 
 async function katalog() {
-  const { katalog: k } = await api('mg_katalog');
+  const { katalog: k, gieldy: listaGield } = await api('mg_katalog');
   const towary = h('textarea', { style: 'min-height:260px' }, JSON.stringify(k.towary, null, 2));
   // Specyfika planet: klucze t:<id>/k:<kategoria> zamieniamy na nazwy, żeby dało się je czytać.
   const nazwaTowaru = Object.fromEntries(k.towary.map((t) => [t.id, t.nazwa]));
@@ -251,9 +251,28 @@ async function katalog() {
   const lokacje = h('textarea', { style: 'min-height:260px' }, JSON.stringify((k.lokacje || []).map((l) => ({ ...l, planeta: pl[l.planeta] || '' })), null, 2));
   const tempo = h('input', { type: 'number', min: 0.05, max: 60, step: 0.05, value: k.ustawienia?.tempo ?? 1, style: 'max-width:140px' });
   const info = h('div');
+  const spolki = (k.spolki || []).map((s) => ({ ...s }));
+  const listaSpolek = h('div');
+  const rysujSpolki = () => {
+    wyczysc(listaSpolek).append(...spolki.map((s, i) => {
+      const symbol = h('input', { value: s.symbol || '', maxlength: 6, placeholder: 'np. CEC', style: 'width:90px' });
+      const nazwa = h('input', { value: s.nazwa || '', placeholder: 'Nazwa spółki' });
+      const branza = h('input', { value: s.branza || '', placeholder: 'Branża', style: 'width:140px' });
+      const status = h('select', [h('option', { value: 'notowana', selected: s.status !== 'poza_gielda' }, 'Firma notowana na giełdzie'),
+        h('option', { value: 'poza_gielda', selected: s.status === 'poza_gielda' }, 'Firma poza giełdą')]);
+      const gielda = h('select', listaGield.map((g) => h('option', { value: g.id, selected: g.id === s.gielda }, g.nazwa)));
+      const cena = h('input', { type: 'number', min: 1, step: 'any', value: s.cena || 100, title: 'Cena bazowa akcji', style: 'width:110px' });
+      const pochodzenie = h('input', { value: s.pochodzenie || '', placeholder: 'Planeta pochodzenia', style: 'width:160px' });
+      const wiersz = h('div.rzad', { style: 'gap:8px; margin:8px 0; flex-wrap:wrap' }, symbol, nazwa, branza, status, gielda, cena, pochodzenie);
+      wiersz._dane = () => ({ symbol: symbol.value, nazwa: nazwa.value, branza: branza.value, status: status.value,
+        gielda: gielda.value, cena: Number(cena.value), pochodzenie: pochodzenie.value });
+      return wiersz;
+    }));
+  };
+  rysujSpolki();
   glowna.append(h('div.karta',
     h('h2', 'Katalog gry'),
-    h('p.slaby', 'Wspólna lista dla całej gry: towary używają firmy (a później giełda), planety używa planowanie kursów (później dojdzie mapa). '
+    h('p.slaby', 'Wspólna lista dla całej gry: towary używają firmy i giełda, spółki pokazują ich status notowania, a planety używają planowanie kursów i mapa. '
       + 'Pole „id” nadaje serwer — nie zmieniaj go, bo odwołują się do niego magazyny i kursy. Nowe pozycje dopisuj bez „id”. '
       + 'Towar: nazwa, kategoria, masa (t na jednostkę), jednostka, cena (bazowa, kr). '
       + 'Planeta: nazwa, sektor, typ (pustynna, lodowa, oceaniczna, lesna, wulkaniczna, gazowa, miasto, bagienna, skalista — widok z powierzchni i chmury przy starcie), wspolrzedne (do skoku), kontrola (nazwa kontroli lotów, np. „Imperialna Kontrola Lotów”; brak = planeta bez kontroli), specyfika — mnożniki ceny dla towarów albo kategorii, np. {"surowce": 0.6, "Zboże": 1.5} '
@@ -263,6 +282,11 @@ async function katalog() {
       + 'pozostali gracze w ogóle się o niej nie dowiedzą (MG widzi zawsze).'),
     info,
     h('label', 'Towary', towary), h('br'),
+    h('h3', 'Spółki'),
+    h('p.slaby', 'Lista obejmuje spółki notowane i nienotowane. Dla notowanych giełda utworzy lub zaktualizuje akcje; firmy poza giełdą nie będą dostępne do handlu. Symbol można zostawić pusty — system nada go automatycznie.'),
+    listaSpolek,
+    btn('Dodaj spółkę', () => { spolki.push({ symbol: '', nazwa: '', branza: '', status: 'poza_gielda', gielda: listaGield[0]?.id || '', cena: 100, pochodzenie: '' }); rysujSpolki(); }),
+    h('br'),
     h('label', 'Planety', planety), h('br'),
     h('label', 'Lokacje — miejsca na planetach, do których postacie mogą się przemieszczać: nazwa, planeta, typ (hangar, platforma, port, hotel, bankomat, sklep, kantyna, biuro, garaz, inne; lądowiska: hangar, platforma, port), '
       + 'x i y (km na mapie planety), publiczna (true = każdy zna; false = tylko postacie z „znane miejsca” w karcie). Hangar: jakosc 1–5 (szybkość obsługi), paliwo (zapas w %; brak = bez ograniczeń), cena_paliwa (kr za 1%). '
@@ -272,7 +296,7 @@ async function katalog() {
     h('div.rzad',
       btn('Zapisz katalog', async () => {
         try {
-          await api('mg_katalog_zapisz', { towary: JSON.parse(towary.value), planety: JSON.parse(planety.value), oferty: JSON.parse(oferty.value), lokacje: JSON.parse(lokacje.value), tempo: Number(tempo.value) });
+          await api('mg_katalog_zapisz', { towary: JSON.parse(towary.value), spolki: [...listaSpolek.children].map((x) => x._dane()), planety: JSON.parse(planety.value), oferty: JSON.parse(oferty.value), lokacje: JSON.parse(lokacje.value), tempo: Number(tempo.value) });
           wyczysc(glowna); await katalog();
           glowna.prepend(msg('Zapisano katalog.', 'ok'));
         } catch (e) {
@@ -997,7 +1021,8 @@ async function gielda() {
         g.instrumenty.map((i) => {
           const k = kursy[i.symbol] ?? i.cena;
           const r = (k / i.cena - 1) * 100;
-          return h('tr', h('td', h('b', i.symbol)), h('td', i.nazwa, h('div.slaby', i.rodzaj === 'spolka' ? 'spółka' : `towar · ${i.jednostka}`)), h('td', i.kategoria),
+          return h('tr', h('td', h('b', i.symbol)), h('td', i.nazwa, h('div.slaby', i.rodzaj === 'spolka'
+            ? ((i.notowana ?? true) ? 'spółka · notowana' : 'spółka · poza giełdą') : `towar · ${i.jednostka}`)), h('td', i.kategoria),
             h('td', nazwyGield[i.gielda] || i.gielda), h('td', i.cena), h('td', k), h('td', { style: `color:${r >= 0 ? 'var(--akcent)' : 'var(--zly)'}` }, `${r >= 0 ? '+' : ''}${r.toFixed(1)}%`));
         })))),
     h('div.karta', h('h2', 'Portfele graczy'),
@@ -1006,7 +1031,7 @@ async function gielda() {
         : h('p.slaby', 'Nikt jeszcze nic nie kupił.')),
     h('div.karta', h('h2', 'Edytor giełdy'),
       info,
-      h('p.slaby', 'Giełda: id (2–12 małych liter), nazwa, planeta. Instrument: symbol (2–6 znaków), nazwa, rodzaj (spolka albo towar), kategoria (towary: te same co w katalogu, np. paliwo, surowce, żywność, medycyna, technika, broń, luksus, przyprawy; '
+      h('p.slaby', 'Giełda: id (2–12 małych liter), nazwa, planeta. Towary dodawaj w Katalogu — pojawią się tu automatycznie. Spółki i ich status notowania ustawiaj w Katalogu. Instrument: symbol (2–6 znaków), nazwa, rodzaj (spolka albo towar), kategoria (towary: te same co w katalogu, np. paliwo, surowce, żywność, medycyna, technika, broń, luksus, przyprawy; '
         + 'spółki: branża, np. stocznie, uzbrojenie, droidy), gielda (id), cena (bazowa — wokół niej błądzi kurs), jednostka, pochodzenie (planeta: wydarzenia na niej działają na ten instrument), '
         + 'zmiennosc (opcjonalnie, dzienna, np. 0.03). Kursy liczą się co dzień same; nowy instrument dostaje historię od razu.'),
       h('div.siatka', ...Object.entries({ powrot: 'Powrót do ceny bazowej (dziennie)', zmiennosc_spolka: 'Wahania spółek (dzienne)', zmiennosc_towar: 'Wahania towarów (dzienne)', prowizja: 'Prowizja (np. 0.005 = 0,5%)', historia_dni: 'Dni historii dla nowych' })

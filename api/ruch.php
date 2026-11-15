@@ -350,7 +350,7 @@ function obsluz_ruch(string $akcja, bool $post): void
     switch ($akcja) {
 
         // Mapa galaktyki: gdzie jest postać, dokąd leci i gdzie stoją statki jej firm.
-        // Planety podajemy po nazwie, a datapad dopasowuje je do mapy (assets/mapa/planety.json).
+        // Planety podajemy po nazwie, a datapad dopasowuje je do mapy galaktyki z SQL.
         case 'mapa':
             $u = wymagaj_logowania();
             $karta = karta($u['id']);

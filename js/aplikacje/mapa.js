@@ -1,6 +1,6 @@
 // Mapa galaktyki: planety, regiony i szlaki nadprzestrzenne. Pokazuje, gdzie jest postać,
-// dokąd leci i gdzie stoją statki jej firm. Dane astronawigacyjne leżą w assets/mapa/
-// (pliki systemu, działają też bez zasięgu). Pozycja przychodzi z api/?a=mapa.
+// dokąd leci i gdzie stoją statki jej firm. Dane astronawigacyjne są pobierane z SQL
+// przez API i buforowane przez service worker do pracy bez zasięgu.
 
 import { h, wyczysc } from '../rdzen/narzedzia.js';
 import { api } from '../rdzen/api.js';
@@ -19,11 +19,7 @@ const liczba = (n, miejsca = 0) => Number(n).toLocaleString('pl-PL', { maximumFr
 let dane = null;
 async function wczytajDane() {
   if (dane) return dane;
-  const pobierz = (plik) => fetch(new URL(`../../assets/mapa/${plik}`, import.meta.url)).then((o) => {
-    if (!o.ok) throw new Error(String(o.status));
-    return o.json();
-  });
-  const [surowePlanety, suroweSzlaki] = await Promise.all([pobierz('planety.json'), pobierz('szlaki.json')]);
+  const { planety: surowePlanety, szlaki: suroweSzlaki } = await api('mapa_dane');
   // [nazwa, region, x, y, grawitacja, słońca, księżyce, doba, rok, średnica]
   const planety = surowePlanety.map(([nazwa, r, x, y, g, slonca, ksiezyce, doba, rok, srednica]) => ({
     nazwa, region: REGIONY[r] || '', x, y, g, slonca, ksiezyce, doba, rok, srednica, klucz: norm(nazwa),
